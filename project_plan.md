@@ -276,9 +276,17 @@ Report **per-class IoU** for rare safety-critical classes (pedestrian, cyclist, 
 
 ### Experiment matrix
 
-Same as the [terminology](#terminology-e0--e1--e2) table. Logs: `experiments/logs/e0/`, `e1/`, `e2/`. Person 1 merges the final comparison table on **mini_val** (from all three `metrics.json` files).
+Same as the [terminology](#terminology-e0--e1--e2) table. Logs: `experiments/logs/e0/`, `e1/`, `e2/`. Person 3 merges the final comparison table on **mini_val**.
 
-Optional ablations: single cam vs multi-cam attention.
+**Optional follow-on experiments** (only if E0–E2 are done and time permits):
+
+| Ablation | What to change | Expected signal |
+|----------|---------------|-----------------|
+| Single cam vs all-cam attention | Pass only front camera patches as K/V | Quantifies how much rear/side cameras contribute |
+| DINOv2 layer 9 vs layer 12 | `get_intermediate_layers(x, n=[8])` vs `n=1` in `backbones/dinov2.py` | Layer 9 captures broader region structure; layer 12 captures finer object detail — paper found layer 9 marginally better |
+| Concat layers 9 + 12 | `n=[8, 11]`, `torch.cat(outputs, dim=-1)` → D_v doubles to 768 | Richer features at the cost of 2× K/V memory; update `d_v` in config |
+| Temporal PE on E2 | `use_temporal_pe: true` in config | Explicit frame-ordering signal for T=6; off by default since E1 (T=1) gets no benefit from it |
+| Camera PE | `use_camera_pe: true` in config | Learned front/rear/side camera identity token added to each patch; cheap (6 × 384 = 2k params) |
 
 ### Hyperparameters (training)
 
@@ -303,64 +311,63 @@ Map names in [§9 Team](#9-team). Experiments defined in [§6](#6-evaluation).
 
 | | **Person 1** | **Person 2** | **Person 3** |
 |---|--------------|--------------|--------------|
-| **Owns** | Data + LiDAR + **eval stack** | Vision + fusion model | Training + contracts |
-| **Modules** | `datasets/nuscenes.py`, `backbones/ptv3.py`, `eval/*`, eval CLI | `backbones/dinov2.py`, `fusion/*`, `models/focus_fusion.py`, `third_party/*` | `contracts/*`, `train/*` |
-| **Experiment** | **E0** — frozen ptv3; **writes & runs** all val metrics | **E2** — FocusFusion, `T=6`, frozen hparams; runs P1’s eval CLI on `best.pt` | **E1** — FocusFusion, `T=1`, hparam tuning → freeze `configs/default.yaml` |
-| **Ships to team** | `DataLoader` + **eval scripts** + E0 `metrics.json`; merged E0–E2 table | `model(batch) → {logits, attn_weights?}`; E2 `metrics.json` | `trainer.py`; frozen train recipe for P2 |
+| **Owns** | Data + LiDAR backbone | Vision + fusion model | Training + evaluation stack |
+| **Modules** | `datasets/nuscenes.py`, `backbones/ptv3.py` | `backbones/dinov2.py`, `fusion/*`, `models/focus_fusion.py`, `third_party/*` | `contracts/*`, `train/*`, `eval/*`, experiment CLI |
+| **Experiment** | **E0** — frozen ptv3 eval (no training) | **E2** — FocusFusion, `T=6`, frozen hparams from E1 | **E1** — FocusFusion, `T=1`, tune hparams → freeze `configs/default.yaml` → merge final table |
+| **Ships to team** | `DataLoader` + E0 metrics on `mini_val` | `model(batch) → {logits, attn_weights?}` on real batches | Trainer + **shared eval scripts**; frozen train recipe for E2 |
 
 **Team gates:** contracts merged (Tue W1) → train step on real batch (Thu W1) → **E0** JSON on `mini_val` (Fri W1) → hparams frozen (Tue W2) → `experiments/logs/e0|e1|e2/` + report draft (Fri W2).
 
-### What “eval” means (Person 1 owns the stack)
+### What “eval” means (who writes vs who runs)
 
-**Eval = inference on `mini_val` + metric computation + saved results** — not training. Person 1 builds this first for **E0** (frozen ptv3); P2/P3 reuse the same CLI after training.
+**Eval = inference on `mini_val` + metric computation + saved results** — not training. For each experiment, load the right checkpoint, run the model forward on the val split, compare `logits` to `labels`, write numbers to disk.
 
 | Piece | Owner | What it is |
 |-------|-------|------------|
-| **`eval/metrics.py`** | **Person 1** | mIoU, mAcc, fwIoU, per-class IoU; importable from `trainer` for val loops |
-| **`eval/visualize.py`** | **Person 1** | Attention overlay + 1–2 failure examples for the report |
-| **Eval CLI** | **Person 1** | `python -m focus_fusion.eval.metrics --experiment e0\|e1\|e2 --checkpoint … --split mini_val --out experiments/logs/<exp>/` |
-| **Run E0** | **Person 1** | First consumer of the CLI; `experiments/logs/e0/metrics.json` |
-| **Run E1 val metrics** | **Person 1** (or P3 invokes P1’s CLI) | After P3’s E1 `best.pt` exists → `logs/e1/metrics.json` |
-| **Run E2 val metrics** | **Person 2** (P1’s CLI) | After E2 `best.pt` → `logs/e2/metrics.json` |
-| **Trainer val hook** | **Person 3 wires, Person 1 API** | P3’s `trainer.py` calls `eval.metrics` during E1 training for checkpoint selection |
-| **Final comparison table** | **Person 1** | Merge three `metrics.json` files (Fri W2) |
+| **`eval/metrics.py`** | **Person 3 (writes)** | mIoU, mAcc, fwIoU, per-class IoU; unit-tested on fake preds/labels |
+| **`eval/visualize.py`** | **Person 3 (writes)** | Thin helpers: attention overlay, optional error-map export (2–3 samples for report) |
+| **Eval CLI** | **Person 3 (writes)** | e.g. `python -m focus_fusion.eval.metrics --experiment e0 --split mini_val --out experiments/logs/e0/` — loads model + `DataLoader`, loops val, calls `metrics.py`, saves `metrics.json` (+ optional CSV) |
+| **Trainer val hook** | **Person 3 (writes)** | Optional: same metrics during training for E1/E2 checkpoint picking |
+| **Run E0 eval** | **Person 1 (runs)** | Uses P3’s CLI on frozen ptv3; owns `experiments/logs/e0/` |
+| **Run E1 eval** | **Person 3 (runs)** | After training E1; owns `experiments/logs/e1/` |
+| **Run E2 eval** | **Person 2 (runs)** | After training E2, same CLI with `--experiment e2` + best ckpt; owns `experiments/logs/e2/` |
+| **Final comparison table** | **Person 3 (merges)** | One markdown/CSV row per experiment from the three `metrics.json` files |
 
-Person 3 focuses on **training + E1 hparam tuning**, not building eval infrastructure.
+Person 3 does **not** own all experiment runs — they own the **shared eval library and entrypoint**. P1/P2 run it for their experiments once checkpoints exist.
 
 ### Execution checklist
 
-| Person 1 — Data, ptv3 & eval | Person 2 — dinov2 & fusion | Person 3 — Train & contracts |
+| Person 1 — Data & ptv3 | Person 2 — dinov2 & fusion | Person 3 — Train & eval |
 |--------------------------|----------------------------|-------------------------|
 | **Week 1 — build** | | |
 | - [ ] Download **nuScenes v1.0-mini** + lidarseg; verify one sample loads | - [ ] Add `third_party/ptv3` + `dinov2` submodules; pin SHAs in `third_party/README.md` | - [ ] `requirements.txt`; agree on `configs/default.yaml` skeleton |
 | - [ ] `configs/nuscenes.yaml` (paths, cam order, class count) | - [ ] `tests/test_memory_bank.py` (`T=1`, `T=6` push/pop/stack shape) | - [ ] **`contracts/`** merged (Tue): `fake_batch`, DummyE0, DummyFocusFusion, FakeDataset |
 | - [ ] Loader stub → **real** lidarseg labels + 6 camera images | - [ ] `tests/test_cross_attention.py` (synthetic Q vs stacked K/V) | - [ ] `train/losses.py` (CE on point labels) |
-| - [ ] `datasets/nuscenes.py`: `points`, `labels`, `images`, `sample_token` | - [ ] `fusion/cross_attention.py` + `temporal/memory_bank.py` | - [ ] `train/trainer.py`: 1 epoch on DummyFocusFusion + FakeDataset |
-| - [ ] `backbones/ptv3.py`: load `checkpoints/ptv3/`, frozen forward | - [ ] `models/focus_fusion.py` shell on `fake_batch()` (stubs OK) | - [ ] `tests/test_integration.py` passes |
-| - [ ] **`eval/metrics.py`** + unit tests; **`eval/visualize.py`** stub | - [ ] Wire real ptv3/dinov2 into FocusFusion when ready | - [ ] Trainer imports `eval.metrics` for val (coordinate API with P1 Thu) |
-| - [ ] **Eval CLI** (`--experiment e0\|e1\|e2`, `--checkpoint`, `--out`) | - [ ] E2E on **real** batch: forward → `logits` `(B,N,C)` (Fri) | - [ ] Trainer smoke on P1’s real `DataLoader` (Thu–Fri) |
-| - [ ] `data/README.md`; smoke: `DataLoader` keys match `fake_batch` | - [ ] Return `attn_weights` when config requests it (for P1 viz) | |
-| - [ ] **Run E0** → `experiments/logs/e0/metrics.json` (Fri) | | |
+| - [ ] `datasets/nuscenes.py`: `points`, `labels`, `images`, `sample_token` | - [ ] `fusion/cross_attention.py` + `temporal/memory_bank.py` | - [ ] `eval/metrics.py` + unit tests (fake logits/labels) |
+| - [ ] `backbones/ptv3.py`: load `checkpoints/ptv3/`, frozen forward | - [ ] `models/focus_fusion.py` shell on `fake_batch()` (stubs OK) | - [ ] `train/trainer.py`: 1 epoch on DummyFocusFusion + FakeDataset |
+| - [ ] `data/README.md` (download + layout) | - [ ] Wire real ptv3/dinov2 into FocusFusion when P1/P2 ready | - [ ] `tests/test_integration.py` passes |
+| - [ ] Smoke: one `DataLoader` batch matches `fake_batch` keys | - [ ] E2E on **real** batch from P1: forward → `logits` shape `(B,N,C)` (Fri) | - [ ] Eval CLI stub: `--experiment`, `--split`, `--out` (can error until ckpt exists) |
+| - [ ] **Run E0** with P3’s eval CLI → `experiments/logs/e0/metrics.json` (Fri) | - [ ] Return `attn_weights` in forward dict when `eval_mode` / config flag set | - [ ] Trainer smoke on P1’s real `DataLoader` (Thu–Fri) |
 | **Week 2 — experiments** | | |
-| - [ ] `points_seq` / `images_seq` collate for **E2** (Mon) | - [ ] Confirm FocusFusion with `T=6` from P1 loader | - [ ] **E1** hparam trials (Mon–Tue); `logs/e1/tune_*` |
-| - [ ] Stable `mini_train` / `mini_val` loaders | - [ ] **Train E2** → `logs/e2/best.pt` (Wed+) | - [ ] **Freeze** `configs/default.yaml` (Tue EOD) |
-| - [ ] **Eval E1** checkpoint → `logs/e1/metrics.json` (Wed, after P3 trains) | - [ ] **Eval E2** via P1 CLI → `logs/e2/metrics.json` | - [ ] **Train E1** final → `logs/e1/best.pt` (Wed) |
-| - [ ] Merge **E0–E2** table + report eval section (Fri) | - [ ] Export 2–3 `attn_weights` for P1 `visualize.py` | - [ ] Hand P3 train logs / curves for report |
-| - [ ] Report: dataset + E0 baseline + failure examples | | |
+| - [ ] `points_seq` / `images_seq` collate for **E2** (Mon; same scene, consecutive keyframes) | - [ ] Confirm FocusFusion works with `T=6` stack from P1 loader | - [ ] **E1** short hparam trials on `mini_train` (Mon–Tue); log to `logs/e1/tune_*` |
+| - [ ] Stable `mini_train` / `mini_val` loaders (no key drift) | - [ ] **Train E2** with frozen `default.yaml` → `logs/e2/best.pt` (Wed+) | - [ ] **Freeze** `configs/default.yaml` (Tue EOD) |
+| - [ ] Re-run or confirm **E0** `metrics.json` for report | - [ ] **Run E2 eval** (P3 CLI) → `logs/e2/metrics.json` | - [ ] **Train + eval E1** final → `logs/e1/best.pt` + `metrics.json` (Wed) |
+| - [ ] Report: dataset + E0 baseline table + 1–2 failure examples | - [ ] Export 2–3 `attn_weights` samples for `visualize.py` | - [ ] `eval/visualize.py`: minimal attention figure for report |
+| | | - [ ] Merge **E0–E2** into one table (Fri); shared report train/eval section |
 
-**Commands (Person 1’s eval CLI; P2/P3 call it after training):**
+**Commands (all use P3’s eval entrypoint after week 1):**
 
 ```bash
-# E0 — Person 1 (no training)
+# E0 — Person 1 runs (no training)
 python -m focus_fusion.eval.metrics --experiment e0 --split mini_val --out experiments/logs/e0/
 
-# E1 — Person 3 trains; Person 1 eval (or P3 runs P1’s CLI)
+# E1 — Person 3 trains, then eval (or trainer calls metrics on val each epoch)
 python -m focus_fusion.train.trainer --config configs/default.yaml --experiment e1
-python -m focus_fusion.eval.metrics --experiment e1 --checkpoint experiments/logs/e1/best.pt --split mini_val --out experiments/logs/e1/
+python -m focus_fusion.eval.metrics --experiment e1 --checkpoint experiments/logs/e1/best.pt --split mini_val
 
-# E2 — Person 2 trains + runs P1’s eval CLI
+# E2 — Person 2 trains, then runs same eval script
 python -m focus_fusion.train.trainer --config configs/default.yaml --experiment e2
-python -m focus_fusion.eval.metrics --experiment e2 --checkpoint experiments/logs/e2/best.pt --split mini_val --out experiments/logs/e2/
+python -m focus_fusion.eval.metrics --experiment e2 --checkpoint experiments/logs/e2/best.pt --split mini_val
 ```
 
 **Assignment:** Match Person 1–3 to names in [§9](#9-team) (e.g. prior fusion work → Person 2).
@@ -438,4 +445,3 @@ python -m focus_fusion.eval.metrics --experiment e2 --checkpoint experiments/log
 | 2026-05-19 | — | Compressed timeline to **2 weeks**; gates A–E; scope cuts (≤3 E1 trials, no optional ablations) |
 | 2026-05-19 | — | §7 shortened: ownership table + 3-column checklist; removed diagrams, batch schema, per-person detail |
 | 2026-05-19 | — | §7: deeper execution checklist; clarified eval (P3 writes scripts, P1/P2/P3 run per experiment) |
-| 2026-05-19 | — | Eval stack → **Person 1** (P3 trains + E1 tuning only; P2/P3 use P1 eval CLI) |
