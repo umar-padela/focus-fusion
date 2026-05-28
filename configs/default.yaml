@@ -1,0 +1,25 @@
+experiment: e0
+seed: 231
+
+data:
+  name: nuscenes_lidarseg
+  version: v1.0-mini
+  train_split: mini_train
+  val_split: mini_val
+  root: data/nuscenes
+  voxel_size: 0.05
+  num_classes: 16
+  ignore_index: -1
+
+model:
+  lidar_backbone: litept
+  litept:
+    pointcept_root: third_party/pointcept
+    config: configs/nuscenes/semseg-litept-v1m1-0-small.py
+    checkpoint: checkpoints/LitePT/nuscenes-semseg-litept-small-v1m1/model/model_best.pth
+    frozen: true
+
+eval:
+  experiment: e0
+  output_dir: experiments/logs/e0
+  save_predictions: true
