@@ -1,33 +1,44 @@
 # FocusFusion — shared config for E1 and E2.
-# Override T in modal_train.py args or pass --extra-args "--config configs/e2.yaml"
+# E0 (LitePT baseline, Person 1) uses configs/e0.yaml.
+
+experiment: e1
+seed: 231
+
+data:
+  dataroot: /experiments/data   # Modal volume path; override locally with --data-root data
+  version: v1.0-mini
+  train_split: mini_train
+  val_split: mini_val
 
 model:
-  # --- Backbone dims (frozen) ---
-  d_l: 512          # ptv3 per-point output dim (confirm with Person 1)
-  d_v: 384          # DINOv2 ViT-S/14 patch dim
-  d_f: 256          # fusion + seg head input dim
+  # --- LiDAR backbone ---
+  lidar_backbone: litept        # 'litept' once Person 1's wrapper lands; stub=zeros for now
+  d_l: 512                      # LitePT output dim (confirm with Person 1)
 
-  # --- Temporal ---
-  T: 1              # 1 = E1 (single frame); 6 = E2 (3s at 2Hz)
+  # --- Vision backbone (frozen DINOv2 ViT-S/14) ---
+  d_v: 384                      # patch embedding dim
+  img_size: 448                 # must be divisible by 14; P = (448/14)^2 = 1024 patches
+  normalize_input: true         # DINOv2Backbone applies ImageNet mean/std internally
 
-  # --- Architecture ---
-  img_size: 448     # must be divisible by 14; P = (448/14)^2 = 1024 patches
+  # --- Fusion ---
+  d_f: 256                      # cross-attention hidden dim
   num_heads: 8
   dropout: 0.1
   head_hidden_dim: 128
-  num_classes: 32   # nuScenes lidarseg raw classes (coordinate 16-class mapping with Person 1)
-  N_points: 16384   # fixed LiDAR point count (subsampled in dataloader)
-  normalize_input: true   # DINOv2Backbone applies ImageNet mean/std internally
 
-  # --- Positional embeddings (off by default; enable in E2 ablation) ---
+  # --- Classes (Person 1's 16-class challenge mapping) ---
+  num_classes: 16
+  N_points: 16384               # fixed LiDAR point count (subsampled in dataloader)
+
+  # --- Temporal ---
+  T: 1                          # 1 = E1 (single frame); 6 = E2 (3s at 2Hz)
+
+  # --- Positional embeddings ---
   use_temporal_pe: false
   use_camera_pe: false
 
   # --- Eval ---
-  eval_mode: false  # true = export attn_weights for visualisation (slower)
-
-data:
-  dataroot: /experiments/data   # Modal volume path; override locally with --data-root data
+  eval_mode: false              # true = export attn_weights for visualisation
 
 train:
   epochs: 50
@@ -39,9 +50,9 @@ train:
   val_every_epochs: 5
 
 loss:
-  num_classes: 32
-  ignore_index: -1    # -1 = padded/invalid points; set to 0 to also ignore "noise" class
-  lovasz_weight: 0.0  # 0.0 = CE only; enable Lovász once baseline is stable
+  num_classes: 16
+  ignore_index: -1              # void / padded points
+  lovasz_weight: 0.0            # 0.0 = CE only; enable Lovász once baseline is stable
 
 checkpoints:
-  ptv3: null   # path to frozen ptv3 checkpoint (set once Person 1's weights are ready)
+  litept: checkpoints/LitePT/nuscenes-semseg-litept-small-v1m1/model/model_best.pth

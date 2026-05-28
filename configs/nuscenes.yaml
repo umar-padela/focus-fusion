@@ -1,0 +1,26 @@
+dataset:
+  name: nuscenes_lidarseg
+  version: v1.0-mini
+  root: data/nuscenes
+  mini_train: mini_train
+  mini_val: mini_val
+  voxel_size: 0.05
+  ignore_index: -1
+
+classes:
+  - barrier
+  - bicycle
+  - bus
+  - car
+  - construction_vehicle
+  - motorcycle
+  - pedestrian
+  - traffic_cone
+  - trailer
+  - truck
+  - driveable_surface
+  - other_flat
+  - sidewalk
+  - terrain
+  - manmade
+  - vegetation

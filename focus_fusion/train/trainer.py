@@ -220,8 +220,8 @@ class Trainer:
         self.model.train()
         # Keep frozen backbones in eval mode (affects BN / dropout)
         self.model.dinov2.eval()
-        if self.model.ptv3 is not None:
-            self.model.ptv3.eval()
+        if self.model.litept is not None:
+            self.model.litept.eval()
 
         total_loss = 0.0
         num_batches = 0
@@ -315,15 +315,17 @@ def build_loaders_from_config(config: Dict, experiment: str):
         from focus_fusion.datasets.fake import FakeLidarSegDataset
         mc = config.get("model", {})
         train_ds = FakeLidarSegDataset(
-            num_samples=32,
-            num_points=mc.get("N_points", 8192),
+            length=16,
+            num_points=mc.get("N_points", 256),   # small for smoke run
             num_classes=config.get("loss", {}).get("num_classes", 32),
+            img_size=mc.get("img_size", 56),       # small for smoke run; must be div by 14
             T=T,
         )
         val_ds = FakeLidarSegDataset(
-            num_samples=8,
-            num_points=mc.get("N_points", 8192),
+            length=4,
+            num_points=mc.get("N_points", 256),
             num_classes=config.get("loss", {}).get("num_classes", 32),
+            img_size=mc.get("img_size", 56),
             T=T,
         )
 

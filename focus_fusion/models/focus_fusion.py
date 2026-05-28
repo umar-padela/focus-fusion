@@ -1,10 +1,10 @@
 """FocusFusion — end-to-end model.
 
 Data flow:
-  batch["points"]      → ptv3 (frozen) → Q (B, N, D_l)
+  batch["points"]      → LitePT (frozen) → Q (B, N, D_l)
   batch["images"]      → dinov2 (frozen) → patches (B, 1, 6, P, D_v)   [E1, T=1]
   batch["images_seq"]  → dinov2 (frozen) → patches (B, T, 6, P, D_v)   [E2, T=6]
-  patches → MemoryBank.forward_preloaded → K/V (B, T*6*P, D_v)
+  patches → MemoryBank → K/V (B, T*6*P, D_v)
   Q, K/V → CrossAttentionFusion → fused (B, N, D_f)
   fused → SegmentationHead → logits (B, N, C)
 """
@@ -46,7 +46,7 @@ class FocusFusion(nn.Module):
         self.d_f = _get(m, "d_f", 256)
         self.T = _get(m, "T", 1)
         self.img_size = _get(m, "img_size", 448)
-        self.num_classes = _get(m, "num_classes", 32)
+        self.num_classes = _get(m, "num_classes", 16)
         self.eval_mode = _get(m, "eval_mode", False)
 
         # Vision backbone (lazy import to avoid hard dependency when submodule absent)
@@ -56,12 +56,19 @@ class FocusFusion(nn.Module):
             normalize_input=_get(m, "normalize_input", True),
         )
 
-        # ptv3 backbone loaded separately (Person 1's module)
-        # Set via set_ptv3() after construction, or loaded inside __init__ if path given.
-        self.ptv3: nn.Module | None = None
-        ptv3_path = _get(ckpt, "ptv3", None)
-        if ptv3_path:
-            self._load_ptv3(ptv3_path)
+        # LiDAR backbone — LitePTBackbone (Person 1).
+        # Requires Pointcept on PYTHONPATH and a checkpoint under checkpoints/.
+        # Falls back to zero-stub if not configured (for smoke tests / DINOv2-only runs).
+        # TODO (Person 1): expose intermediate per-point features from LitePT encoder
+        # so FocusFusion.forward() can use them as Q instead of zeros.
+        self.litept: nn.Module | None = None
+        litept_ckpt = _get(ckpt, "litept", None)
+        if litept_ckpt:
+            self._load_litept(
+                config_path=_get(_get(m, "litept", {}), "config",
+                                 "configs/nuscenes/semseg-litept-v1m1-0-small.py"),
+                checkpoint_path=litept_ckpt,
+            )
 
         # Memory bank
         self.memory_bank = MemoryBank(
@@ -90,18 +97,18 @@ class FocusFusion(nn.Module):
         )
 
     # ------------------------------------------------------------------
-    # ptv3 integration
+    # LitePT integration (Person 1)
     # ------------------------------------------------------------------
 
-    def set_ptv3(self, ptv3_module: nn.Module) -> None:
-        """Attach Person 1's ptv3 wrapper after construction."""
-        ptv3_module.requires_grad_(False)
-        self.ptv3 = ptv3_module
+    def set_litept(self, litept_module: nn.Module) -> None:
+        """Attach Person 1's LitePTBackbone after construction."""
+        litept_module.requires_grad_(False)
+        self.litept = litept_module
 
-    def _load_ptv3(self, path: str) -> None:
-        from focus_fusion.models.backbones.ptv3 import PTV3Backbone  # type: ignore[import]
-        self.ptv3 = PTV3Backbone(checkpoint_path=path)
-        self.ptv3.requires_grad_(False)
+    def _load_litept(self, config_path: str, checkpoint_path: str) -> None:
+        from focus_fusion.models.backbones.litept import LitePTBackbone
+        self.litept = LitePTBackbone(config_path=config_path, checkpoint_path=checkpoint_path)
+        self.litept.requires_grad_(False)
 
     # ------------------------------------------------------------------
     # Forward
@@ -122,12 +129,14 @@ class FocusFusion(nn.Module):
         points: Tensor = batch["points"]         # (B, N, 3)
         B, N, _ = points.shape
 
-        # 1. LiDAR features (frozen ptv3 or stub)
+        # 1. LiDAR features — LitePTBackbone (frozen) or zero-stub
+        # TODO (Person 1): LitePTBackbone currently runs the full Pointcept forward.
+        # We need it to return intermediate per-point encoder features (B, N, D_l)
+        # rather than final seg logits. Until that hook is added, Q = zeros.
         with torch.no_grad():
-            if self.ptv3 is not None:
-                q_feats: Tensor = self.ptv3(points)   # (B, N, D_l)
+            if self.litept is not None:
+                q_feats: Tensor = self.litept(batch)  # placeholder — see TODO above
             else:
-                # Stub for smoke tests without ptv3 installed
                 q_feats = torch.zeros(B, N, self.d_l, device=points.device, dtype=points.dtype)
 
         assert q_feats.shape[-1] == self.d_l, (
