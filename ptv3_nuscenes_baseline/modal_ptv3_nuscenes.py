@@ -2,13 +2,13 @@ import modal
 
 app = modal.App("ptv3-nuscenes-mini")
 
-# Paths inside the Modal container.
+# Paths inside Modal container.
 NUSCENES_DIR = "/data/nuscenes"
 CKPT_DIR = "/checkpoints"
 OUT_DIR = "/outputs"
 POINTCEPT_DIR = "/root/Pointcept"
 
-# Persistent Modal volumes.
+# Modal volumes.
 nuscenes_vol = modal.Volume.from_name("nuscenes-data")
 ckpt_vol = modal.Volume.from_name("ptv3-checkpoints")
 out_vol = modal.Volume.from_name("ptv3-outputs")
@@ -23,33 +23,97 @@ image = (
         "wget",
         "curl",
         "build-essential",
+        "clang",
+        "gcc",
+        "g++",
         "libgl1",
         "libglib2.0-0",
         "ninja-build",
     )
     .pip_install(
+        # Core torch stack.
         "torch==2.1.0",
         "torchvision==0.16.0",
         "torchaudio==2.1.0",
+
+        # General scientific/data deps.
         "numpy",
+        "scipy",
+        "scikit-learn",
+        "matplotlib",
+        "pandas",
+        "h5py",
+        "pyyaml",
         "tqdm",
+
+        # nuScenes.
         "nuscenes-devkit",
         "pyquaternion",
+
+        # Pointcept common deps.
         "addict",
         "yapf",
         "tensorboard",
+        "tensorboardX",
         "termcolor",
         "sharedarray",
         "einops",
-        "scikit-learn",
-        "matplotlib",
+        "plyfile",
+        "timm",
+        "wandb",
+
+        # Newer Pointcept optional imports.
+        "transformers==4.41.2",
+        "peft==0.11.1",
+        "huggingface_hub==0.23.4",
+        "accelerate==0.31.0",
+
+        # Sparse conv backend.
+        "spconv-cu120",
+    )
+    .run_commands(
+        "python -m pip install "
+        "torch-scatter torch-cluster torch-sparse torch-spline-conv torch-geometric "
+        "-f https://data.pyg.org/whl/torch-2.1.0+cu121.html"
     )
     .run_commands(
         f"git clone https://github.com/Pointcept/Pointcept.git {POINTCEPT_DIR}",
-        f"cd {POINTCEPT_DIR} && pip install -e . || true",
     )
-    # New Modal API replacement for modal.Mount.from_local_dir(...).
-    # This makes your local scripts available inside the container at /root/project.
+    .run_commands(
+        # Build Pointcept CUDA extension.
+        f"cd {POINTCEPT_DIR}/libs/pointops && "
+        "TORCH_CUDA_ARCH_LIST='8.0;8.6;8.9' "
+        "CUDA_HOME=/usr/local/cuda "
+        "python setup.py install"
+    )
+    .env(
+        {
+            "PYTHONPATH": f"{POINTCEPT_DIR}:/root/project",
+            "TORCH_CUDA_ARCH_LIST": "8.0;8.6;8.9",
+            "CUDA_HOME": "/usr/local/cuda",
+            "WANDB_MODE": "disabled",
+            "WANDB_DISABLED": "true",
+        }
+    )
+    .run_commands(
+        # Build-time smoke test.
+        "python - <<'PY'\n"
+        "import sys\n"
+        f"sys.path.insert(0, '{POINTCEPT_DIR}')\n"
+        "import torch\n"
+        "import torch_scatter\n"
+        "import torch_cluster\n"
+        "import torch_sparse\n"
+        "import torch_geometric\n"
+        "import spconv.pytorch as spconv\n"
+        "import wandb\n"
+        "import peft\n"
+        "import pointops\n"
+        "from pointcept.models import build_model\n"
+        "print('Pointcept dependency smoke test passed')\n"
+        "PY"
+    )
+    # IMPORTANT: add_local_dir must stay last.
     .add_local_dir(
         ".",
         remote_path="/root/project",
@@ -61,13 +125,8 @@ image = (
             "datasets",
             "runs",
             "outputs",
+            "checkpoints",
         ],
-    )
-    .env(
-        {
-            "PYTHONPATH": f"{POINTCEPT_DIR}:/root/project",
-            "TORCH_CUDA_ARCH_LIST": "8.0;8.6;8.9;9.0",
-        }
     )
 )
 
@@ -142,6 +201,9 @@ def eval_ptv3_mini(
         checkpoint,
         "--device",
         "cuda",
+        "--disable-flash",
+        "--patch-size",
+        "128",
         "--save-json",
         f"{OUT_DIR}/ptv3_{split}_metrics.json",
         "--save-predictions",
