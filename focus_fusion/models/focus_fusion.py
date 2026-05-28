@@ -146,7 +146,7 @@ class FocusFusion(nn.Module):
                 patches = patches_cur.unsqueeze(1)      # (B, 1, 6, P, D_v)
 
         # 3. Memory bank → K/V tokens
-        kv_tokens = self.memory_bank.forward_preloaded(patches)  # (B, T*6*P, D_v)
+        kv_tokens = self.memory_bank(patches)  # (B, T*6*P, D_v)
 
         # 4. Cross-attention fusion
         fused, attn_w = self.cross_attn(q_feats, kv_tokens)     # (B, N, D_f)
