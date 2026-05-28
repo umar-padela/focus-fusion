@@ -4,8 +4,8 @@ FIFO stack of DINOv2 patch embeddings.
 Holds the last T timesteps of multi-camera patch embeddings and returns a
 flat (B, T*P, D_v) tensor for use as K and V in cross-attention.
 
-T=1  -> current frame only (E1)
-T=6  -> 3 s of history at nuScenes 2 Hz keyframe rate (E2)
+T=1 -> current frame only (E1)
+T=6 -> 3 s of history at nuScenes 2 Hz keyframe rate (E2)
 """
 
 from __future__ import annotations

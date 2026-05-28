@@ -19,6 +19,7 @@ from train.losses import SegmentationLoss
 from models.focus_fusion import FocusFusion, FocusFusionConfig
 from models.backbones.ptv3 import PTv3Backbone
 from models.backbones.dinov2 import DINOv2Backbone
+from eval.metrics import evaluate_model
 
 
 # ---------------------------------------------------------------------------
@@ -277,20 +278,14 @@ class Trainer:
         """
         # Import here to avoid circular deps and allow Person 1 to land this
         # independently
-        try:
-            from focus_fusion.eval.metrics import evaluate_model
-            metrics = evaluate_model(
-                model=self.model,
-                loader=self.val_loader,
-                device=self.device,
-                num_classes=self.config.get("loss", {}).get("num_classes", 32),
-                ignore_index=self.config.get("loss", {}).get("ignore_index", 0),
-            )
-        except ImportError:
-            # eval/metrics.py not yet available — return dummy so training
-            # can still proceed during week 1
-            metrics = {"mIoU": 0.0, "mAcc": 0.0, "fwIoU": 0.0}
-            print("  [trainer] eval/metrics.py not found — skipping val metrics")
+        metrics = evaluate_model(
+            model=self.model,
+            loader=self.val_loader,
+            device=self.device,
+            num_classes=self.config.get("loss", {}).get("num_classes", 32),
+            ignore_index=self.config.get("loss", {}).get("ignore_index", 0),
+        )
+
 
         # Save snapshot
         metrics_path = self.out_dir / f"val_epoch{epoch:04d}.json"
