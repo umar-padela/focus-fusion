@@ -1,0 +1,47 @@
+# FocusFusion — shared config for E1 and E2.
+# Override T in modal_train.py args or pass --extra-args "--config configs/e2.yaml"
+
+model:
+  # --- Backbone dims (frozen) ---
+  d_l: 512          # ptv3 per-point output dim (confirm with Person 1)
+  d_v: 384          # DINOv2 ViT-S/14 patch dim
+  d_f: 256          # fusion + seg head input dim
+
+  # --- Temporal ---
+  T: 1              # 1 = E1 (single frame); 6 = E2 (3s at 2Hz)
+
+  # --- Architecture ---
+  img_size: 448     # must be divisible by 14; P = (448/14)^2 = 1024 patches
+  num_heads: 8
+  dropout: 0.1
+  head_hidden_dim: 128
+  num_classes: 32   # nuScenes lidarseg raw classes (coordinate 16-class mapping with Person 1)
+  N_points: 16384   # fixed LiDAR point count (subsampled in dataloader)
+  normalize_input: true   # DINOv2Backbone applies ImageNet mean/std internally
+
+  # --- Positional embeddings (off by default; enable in E2 ablation) ---
+  use_temporal_pe: false
+  use_camera_pe: false
+
+  # --- Eval ---
+  eval_mode: false  # true = export attn_weights for visualisation (slower)
+
+data:
+  dataroot: /experiments/data   # Modal volume path; override locally with --data-root data
+
+train:
+  epochs: 50
+  batch_size: 2
+  lr: 1.0e-4
+  lr_min: 1.0e-6
+  weight_decay: 1.0e-4
+  num_workers: 4
+  val_every_epochs: 5
+
+loss:
+  num_classes: 32
+  ignore_index: -1    # -1 = padded/invalid points; set to 0 to also ignore "noise" class
+  lovasz_weight: 0.0  # 0.0 = CE only; enable Lovász once baseline is stable
+
+checkpoints:
+  ptv3: null   # path to frozen ptv3 checkpoint (set once Person 1's weights are ready)

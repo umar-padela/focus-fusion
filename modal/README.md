@@ -44,16 +44,18 @@ modal run --detach modal/modal_train.py --experiment e2
 | `smoke`, `evaluate` | A10G | `$env:MODAL_GPU_EVAL="A10G"` |
 | `train` | A100-40GB | `$env:MODAL_GPU_TRAIN="A100-80GB"` |
 
-## Volumes
+## Volume
+
+One volume holds everything:
 
 | Volume | Mount | Contents |
 |--------|-------|---------|
-| `focus-fusion-data` | `/data` | nuScenes mini dataset |
-| `focus-fusion-experiments` | `/experiments` | checkpoints, logs, eval results |
+| `focus-fusion-experiments` | `/experiments` | `data/` — nuScenes mini; `e1/`, `e2/` — checkpoints & logs |
 
-Browse / download from volumes (paths relative to volume root, no leading `/experiments`):
+Browse / download (paths relative to volume root, no leading `/experiments`):
 ```powershell
 modal volume ls  focus-fusion-experiments
+modal volume ls  focus-fusion-experiments data
 modal volume ls  focus-fusion-experiments e1
 modal volume get focus-fusion-experiments e1/best.pt best.pt
 ```

@@ -18,6 +18,7 @@ from torch import Tensor
 
 from focus_fusion.models.fusion.cross_attention import CrossAttentionFusion
 from focus_fusion.models.temporal.memory_bank import MemoryBank
+from focus_fusion.models.segmentation_head import SegmentationHead
 
 if TYPE_CHECKING:
     from focus_fusion.models.backbones.dinov2 import DINOv2Backbone
@@ -80,8 +81,13 @@ class FocusFusion(nn.Module):
             return_attn_weights=self.eval_mode,
         )
 
-        # Segmentation head (owned by Person 3; stub included here for smoke tests)
-        self.seg_head = nn.Linear(self.d_f, self.num_classes)
+        # Segmentation head
+        self.seg_head = SegmentationHead(
+            d_in=self.d_f,
+            num_classes=self.num_classes,
+            hidden_dim=_get(m, "head_hidden_dim", 128),
+            dropout=_get(m, "dropout", 0.1),
+        )
 
     # ------------------------------------------------------------------
     # ptv3 integration
@@ -155,6 +161,24 @@ class FocusFusion(nn.Module):
         logits = self.seg_head(fused)                            # (B, N, C)
 
         return {"logits": logits, "attn_weights": attn_w}
+
+    # ------------------------------------------------------------------
+    # Trainer helpers
+    # ------------------------------------------------------------------
+
+    def reset_memory(self) -> None:
+        """No-op for preloaded-window training (MemoryBank is stateless).
+
+        Called by the trainer at scene boundaries. In our design the dataloader
+        assembles the T-frame window upfront so there is no state to clear.
+        """
+
+    def trainable_parameters(self) -> list:
+        """Parameters that should be optimised (fusion + seg head, not frozen backbones)."""
+        return list(self.cross_attn.parameters()) + list(self.seg_head.parameters())
+
+    def num_trainable_params(self) -> int:
+        return sum(p.numel() for p in self.trainable_parameters())
 
     # ------------------------------------------------------------------
     # Attention export utility (Week 2)

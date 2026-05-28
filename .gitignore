@@ -219,3 +219,11 @@ __marimo__/
 
 # Project docs (local presentation draft)
 milestone2.md
+
+# nuScenes dataset (large binary files — download separately, see data/README.md)
+data/*
+!data/README.md
+
+# Modal / training experiment outputs
+experiments/
+checkpoints/

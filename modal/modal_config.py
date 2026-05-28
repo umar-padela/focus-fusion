@@ -7,8 +7,8 @@ Layout
 ------
 - ``app``               — groups this project's Modal functions (dashboard: focus-fusion).
 - ``image``             — Debian + CUDA env (torch 2.1.0+cu121, DINOv2, nuScenes deps).
-- ``data_volume``       — persistent disk for nuScenes mini (volume: focus-fusion-data).
-- ``experiments_volume``— persistent disk for checkpoints & logs (volume: focus-fusion-experiments).
+- ``volume``            — single persistent disk for both data and experiments (volume: focus-fusion-experiments).
+                          nuScenes data lives at /experiments/data/; checkpoints at /experiments/.
 - ``smoke``             — infra health check: GPU + torch + DINOv2 forward pass.
 - ``train``             — remote training on GPU_TRAIN (default A100-40GB).
 - ``evaluate``          — remote eval on GPU_EVAL (default A10G).
@@ -37,8 +37,8 @@ import modal
 app = modal.App("focus-fusion")
 
 REPO_ROOT = "/root/focus-fusion"
-DATA_MOUNT = "/data"            # nuScenes mini on focus-fusion-data volume
-EXPERIMENTS_MOUNT = "/experiments"  # checkpoints & logs on focus-fusion-experiments volume
+EXPERIMENTS_MOUNT = "/experiments"               # focus-fusion-experiments volume root
+DATA_MOUNT = f"{EXPERIMENTS_MOUNT}/data"         # nuScenes mini lives here inside the volume
 
 # ---------------------------------------------------------------------------
 # Image — mirrors cs224r conda env (torch 2.1.0+cu121) + project deps
@@ -113,8 +113,7 @@ image = (
 # Volumes — persistent across runs (created on first use)
 # ---------------------------------------------------------------------------
 
-data_volume = modal.Volume.from_name("focus-fusion-data", create_if_missing=True)
-experiments_volume = modal.Volume.from_name("focus-fusion-experiments", create_if_missing=True)
+volume = modal.Volume.from_name("focus-fusion-experiments", create_if_missing=True)
 
 # ---------------------------------------------------------------------------
 # GPU knobs — override without editing code:
@@ -162,10 +161,7 @@ def spawn_modal_function(modal_function, *, label: str, wait: bool = True, **kwa
     image=image,
     gpu=GPU_EVAL,
     timeout=600,
-    volumes={
-        DATA_MOUNT: data_volume,
-        EXPERIMENTS_MOUNT: experiments_volume,
-    },
+    volumes={EXPERIMENTS_MOUNT: volume},
     secrets=[_wandb_secret],
 )
 def smoke() -> dict:
@@ -200,7 +196,7 @@ def smoke() -> dict:
         f"torch={out['torch']} cuda={cuda_ok} dinov2={tuple(out['dinov2_output_shape'])}\n",
         encoding="utf-8",
     )
-    experiments_volume.commit()
+    volume.commit()
 
     print("FocusFusion smoke OK:", out)
     return out
@@ -210,10 +206,7 @@ def smoke() -> dict:
     image=image,
     gpu=GPU_TRAIN,
     timeout=86400,
-    volumes={
-        DATA_MOUNT: data_volume,
-        EXPERIMENTS_MOUNT: experiments_volume,
-    },
+    volumes={EXPERIMENTS_MOUNT: volume},
     secrets=[_wandb_secret],
 )
 def train(
@@ -250,17 +243,14 @@ def train(
 
     print(f"Running: {' '.join(cmd)}")
     subprocess.run(cmd, cwd=REPO_ROOT, check=True)
-    experiments_volume.commit()
+    volume.commit()
 
 
 @app.function(
     image=image,
     gpu=GPU_EVAL,
     timeout=7200,
-    volumes={
-        DATA_MOUNT: data_volume,
-        EXPERIMENTS_MOUNT: experiments_volume,
-    },
+    volumes={EXPERIMENTS_MOUNT: volume},
     secrets=[_wandb_secret],
 )
 def evaluate(
@@ -303,7 +293,7 @@ def evaluate(
 
     print(f"Running: {' '.join(cmd)}")
     subprocess.run(cmd, cwd=REPO_ROOT, check=True)
-    experiments_volume.commit()
+    volume.commit()
 
     return {
         "experiment": experiment,
