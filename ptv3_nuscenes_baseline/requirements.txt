@@ -1,0 +1,13 @@
+# Core Python packages for the standalone loader/evaluator.
+# Install PyTorch separately for your CUDA version, then install these.
+numpy
+tqdm
+nuscenes-devkit
+pyquaternion
+
+# Required by Pointcept/PTv3; exact CUDA-specific packages depend on your machine.
+# Prefer Pointcept's environment.yml or Docker image for these.
+addict
+timm
+torch-scatter
+spconv-cu124 ; platform_system == "Linux"
