@@ -4,7 +4,7 @@ This loader reads raw nuScenes LIDAR_TOP keyframes and their lidarseg labels,
 remaps the raw 32 lidarseg ids to the official 16 challenge classes, and returns
 Pointcept/PTv3-style tensors:
 
-    feat:       [M, 4] = xyz + lidar intensity/strength
+    feat:       [M, 4] = xyz + lidar strength scaled to [0, 1]
     coord:      [M, 3] original xyz coordinates
     grid_coord: [M, 3] integer voxel coordinates
     offset:     [1] cumulative point count for a batch of one scan
@@ -161,7 +161,9 @@ class NuScenesLidarSegDataset(Dataset):
             )
 
         coords = points[:, :3].astype(np.float32, copy=False)
-        strength = points[:, 3:4].astype(np.float32, copy=False)
+        # Match Pointcept's NuScenesDataset preprocessing: raw lidar intensity
+        # is used as "strength" after scaling to [0, 1].
+        strength = points[:, 3:4].astype(np.float32, copy=False) / 255.0
         labels = remap_raw_labels(raw_labels, self.learning_map, ignore_index=self.ignore_index)
 
         grid_all, unique_indices, inverse = _voxelize_first_point(coords, self.voxel_size)
