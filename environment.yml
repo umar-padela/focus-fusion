@@ -1,0 +1,46 @@
+# Local development environment for FocusFusion.
+# CPU-only torch — tests and dataset code run on CPU; GPU training runs on Modal.
+#
+# Create:  conda env create -f environment.yml
+# Update:  conda env update -f environment.yml --prune
+# Activate: conda activate focus-fusion
+
+name: focus-fusion
+
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.11
+  - pip>=24.0
+
+  - pip:
+    # PyTorch CPU — matches Modal image API surface; no CUDA needed locally
+    - torch
+    - torchvision
+
+    # Core ML
+    - numpy<2.0
+    - tqdm
+    - einops         # used by DINOv2 internals
+    - omegaconf      # used by DINOv2 internals + config loading
+    - pyyaml
+    - scikit-learn   # mIoU computation in eval
+
+    # Vision / data
+    - Pillow
+    - opencv-python-headless
+    - matplotlib
+
+    # nuScenes dataset
+    - nuscenes-devkit
+
+    # Logging
+    - wandb
+
+    # Cloud training
+    - modal
+
+    # Dev / test
+    - pytest

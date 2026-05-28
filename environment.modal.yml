@@ -1,0 +1,45 @@
+# Modal image reference — documents what modal/modal_config.py builds remotely.
+# Do NOT conda-create this on Windows — CUDA wheels require Linux.
+# The authoritative definition is modal/modal_config.py; keep these in sync.
+#
+# Useful as a reference when debugging version conflicts in Modal containers.
+
+name: focus-fusion-modal
+
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.11
+  - pip
+
+  - pip:
+    # PyTorch 2.1.0 + CUDA 12.1
+    - torch==2.1.0
+    - torchvision==0.16.0
+    --extra-index-url https://download.pytorch.org/whl/cu121
+
+    # Core ML
+    - numpy<2.0
+    - tqdm
+    - einops
+    - omegaconf
+    - pyyaml
+    - scikit-learn
+
+    # Vision / data
+    - Pillow
+    - opencv-python-headless
+    - matplotlib
+
+    # nuScenes dataset
+    - nuscenes-devkit
+
+    # Logging
+    - wandb
+
+    # TODO(Person 1): add ptv3 CUDA ops once build steps confirmed
+    # See TODO comment in modal/modal_config.py image definition
