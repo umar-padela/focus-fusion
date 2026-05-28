@@ -254,7 +254,7 @@ class Trainer:
             logits = out["logits"]           # (B, N, C)
             labels = batch["labels"]         # (B, N)
 
-            loss = self.criterion(logits, labels)
+            loss, _ = self.criterion(logits, labels)
             loss.backward()
 
             # Gradient clipping (helps with attention layers)
