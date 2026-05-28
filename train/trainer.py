@@ -388,21 +388,12 @@ def build_loaders_from_config(config: Dict, experiment: str):
 def main():
     parser = argparse.ArgumentParser(description="Train FocusFusion")
     parser.add_argument("--config", default="configs/default.yaml")
-    parser.add_argument("--experiment", choices=["e1", "e2"], default="e1")
     parser.add_argument("--out_dir", default="experiments/logs")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--resume", default=None, help="Path to checkpoint to resume")
     args = parser.parse_args()
 
     config = _load_config(args.config)
-
-    # Experiment-specific T override
-    if args.experiment == "e2":
-        config.setdefault("memory_bank", {})["T"] = 6
-        print("[trainer] E2: overriding memory_bank.T=6")
-    elif args.experiment == "e1":
-        config.setdefault("memory_bank", {})["T"] = 1
-        print("[trainer] E1: memory_bank.T=1")
 
     model = build_model_from_config(config)
     train_loader, val_loader = build_loaders_from_config(config, args.experiment)
@@ -412,7 +403,6 @@ def main():
         train_loader=train_loader,
         val_loader=val_loader,
         config=config,
-        experiment=args.experiment,
         out_dir=args.out_dir,
         device=args.device,
         resume=args.resume,
