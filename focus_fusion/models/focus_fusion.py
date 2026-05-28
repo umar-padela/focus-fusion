@@ -41,7 +41,7 @@ class FocusFusion(nn.Module):
             return getattr(obj, key, default)
 
         self.d_l = _get(m, "d_l", 512)
-        self.d_v = _get(m, "d_v", 768)
+        self.d_v = _get(m, "d_v", 384)
         self.d_f = _get(m, "d_f", 256)
         self.T = _get(m, "T", 1)
         self.img_size = _get(m, "img_size", 448)
@@ -52,7 +52,7 @@ class FocusFusion(nn.Module):
         from focus_fusion.models.backbones.dinov2 import DINOv2Backbone
         self.dinov2 = DINOv2Backbone(
             img_size=self.img_size,
-            normalize_input=_get(m, "normalize_input", False),
+            normalize_input=_get(m, "normalize_input", True),
         )
 
         # ptv3 backbone loaded separately (Person 1's module)
@@ -191,7 +191,7 @@ if __name__ == "__main__":
     cfg = {
         "model": {
             "d_l": 512,
-            "d_v": 768,
+            "d_v": 384,
             "d_f": 256,
             "num_heads": 8,
             "num_classes": num_classes,
@@ -201,7 +201,7 @@ if __name__ == "__main__":
             "dropout": 0.1,
             "use_temporal_pe": False,
             "use_camera_pe": False,
-            "normalize_input": False,
+            "normalize_input": True,
         }
     }
 
@@ -213,7 +213,7 @@ if __name__ == "__main__":
     def _fake_dinov2_forward(self_inner, images):
         bC, _, _, _ = images.shape
         P = (cfg["model"]["img_size"] // 14) ** 2
-        return torch.randn(bC, 6, P, 768)
+        return torch.randn(bC, 6, P, cfg["model"]["d_v"])
 
     from focus_fusion.models import focus_fusion as ff_mod
     with mock.patch.object(

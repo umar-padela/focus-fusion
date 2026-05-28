@@ -16,24 +16,25 @@ _IMAGENET_STD = (0.229, 0.224, 0.225)
 class DINOv2Backbone(nn.Module):
     """Frozen DINOv2 ViT backbone that returns patch embeddings for multi-camera input.
 
-    Accepts (B, 6, 3, H, W) and returns (B, 6, P, D_v=768), no CLS token.
-    Runs the model in float16 under torch.autocast for memory efficiency.
+    Default: dinov2_vits14 (ViT-S/14, D_v=384, 22M params).
+    Accepts (B, 6, 3, H, W) and returns (B, 6, P, D_v), no CLS token.
+    Applies ImageNet normalization internally (normalize_input=True by default).
     """
 
     def __init__(
         self,
-        model_name: str = "dinov2_vitb14",
+        model_name: str = "dinov2_vits14",
         img_size: int = 448,
         freeze: bool = True,
-        normalize_input: bool = False,
+        normalize_input: bool = True,
     ) -> None:
         """
         Args:
-            model_name: torch.hub model name (dinov2_vitb14 / dinov2_vits14 / etc.)
+            model_name: torch.hub model name (dinov2_vits14 / dinov2_vitb14 / etc.)
             img_size: input resolution — must be divisible by 14; default 448 (P=1024)
             freeze: freeze all backbone parameters (should always be True)
-            normalize_input: if True, apply ImageNet mean/std normalisation inside
-                forward. Set False when the dataloader already normalises images.
+            normalize_input: apply ImageNet mean/std normalisation inside forward.
+                True by default — assumes raw [0,1] float images from the dataloader.
         """
         super().__init__()
         assert img_size % 14 == 0, f"img_size={img_size} must be divisible by 14 (DINOv2 patch stride)"
@@ -70,7 +71,7 @@ class DINOv2Backbone(nn.Module):
             images: (B, 6, 3, H, W)  float32, range [0,1] (ImageNet-normalised unless
                     normalize_input=True was set in constructor)
         Returns:
-            patch_embs: (B, 6, P, 768)  — P = (img_size/14)², no CLS token
+            patch_embs: (B, 6, P, D_v)  — D_v=384 for ViT-S, 768 for ViT-B; P = (img_size/14)², no CLS token
         """
         B, C, _, H, W = images.shape  # C = num_cameras = 6
 
