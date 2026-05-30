@@ -62,4 +62,6 @@ class CrossAttentionFusion(nn.Module):
             out, _ = self.attn(Q, kv_tokens, kv_tokens, need_weights=False)
             attn_w = None
 
-        return out, attn_w
+        # Residual: preserve LiDAR features in the output so the seg head sees both
+        # LiDAR geometry (Q) and attended visual features (out), not just visual.
+        return out + Q, attn_w

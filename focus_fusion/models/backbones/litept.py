@@ -1,4 +1,14 @@
-"""Thin Pointcept/LitePT wrapper for LiDAR-only segmentation experiments."""
+"""LitePT backbone wrapper for FocusFusion.
+
+Wraps Pointcept's DefaultSegmentorV2 to extract per-point encoder features
+(backbone_out_channels=72) rather than segmentation logits.
+
+Voxelisation is handled by the dataloader (collate_focusfusion in nuscenes.py),
+so this wrapper just receives a pre-built Pointcept sparse batch and runs the
+backbone. The inverse mapping (also built by the dataloader) is used to expand
+voxel features back to per-point.
+
+    """
 
 from __future__ import annotations
 
@@ -10,27 +20,101 @@ import torch
 
 
 class LitePTBackbone(torch.nn.Module):
-    """Build and run a Pointcept LitePT semantic segmentor.
+    """Frozen LitePT encoder — returns per-point backbone features (B, N, 72).
 
-    The wrapper assumes Pointcept is importable, e.g. by setting
-    `PYTHONPATH=/path/to/Pointcept:$PYTHONPATH`.
+    Expects the batch to contain pre-voxelised Pointcept keys produced by
+    collate_focusfusion(): coord, feat, grid_coord, offset, inverse.
+
+    Args:
+        config_path:     Path to the Pointcept model config (.py file).
+        checkpoint_path: Optional path to model_best.pth weights.
+        disable_flash:   Set enable_flash=False in the config (avoids flash_attn dep).
+        grid_size:       Voxel edge length used during dataset voxelisation (metres).
     """
 
-    def __init__(self, config_path: str, checkpoint_path: str | None = None) -> None:
+    BACKBONE_OUT_CHANNELS: int = 72
+
+    def __init__(
+        self,
+        config_path: str,
+        checkpoint_path: str | None = None,
+        disable_flash: bool = True,
+        grid_size: float = 0.05,
+    ) -> None:
         super().__init__()
         from pointcept.models import build_model
         from pointcept.utils.config import Config
 
         self.config_path = str(config_path)
+        self.grid_size = grid_size
+
         cfg = Config.fromfile(self.config_path)
+        if disable_flash:
+            _disable_flash(cfg.model)
         self.model = build_model(cfg.model)
+
         if checkpoint_path:
-            self.load_checkpoint(checkpoint_path)
+            missing, unexpected, dropped = self.load_checkpoint(checkpoint_path)
+            print(f"[LitePTBackbone] Loaded {checkpoint_path}")
+            if missing:
+                print(f"  missing keys : {len(missing)}")
+            if dropped:
+                print(f"  dropped keys : {len(dropped)} (shape mismatch)")
 
-    def forward(self, batch: Dict[str, torch.Tensor]):
-        return self.model(batch)
+        self.requires_grad_(False)
 
-    def load_checkpoint(self, checkpoint_path: str) -> Tuple[Sequence[str], Sequence[str], Sequence[str]]:
+    # ------------------------------------------------------------------
+    # Forward
+    # ------------------------------------------------------------------
+
+    def forward(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Extract per-point LitePT backbone features.
+
+        Args:
+            batch: FocusFusion batch — must contain Pointcept sparse keys
+                   (coord, feat, grid_coord, offset, inverse) produced by
+                   collate_focusfusion() in the dataloader.
+        Returns:
+            (B, N, BACKBONE_OUT_CHANNELS=72) float32
+        """
+        Point = _import_point_class()
+
+        point = Point({
+            "coord":      batch["coord"],
+            "feat":       batch["feat"],
+            "grid_coord": batch["grid_coord"],
+            "offset":     batch["offset"],
+            "grid_size":  self.grid_size,
+        })
+
+        # Run backbone only — skip seg_head to get encoder features, not logits
+        point = self.model.backbone(point)
+        vox_feats = point.feat          # (total_vox, 72)
+
+        # Expand voxel features back to per-point using precomputed inverse (B, N)
+        B, N = batch["inverse"].shape
+        offsets = batch["offset"]
+        vox_starts = torch.cat([
+            torch.zeros(1, dtype=torch.long, device=offsets.device),
+            offsets[:-1],
+        ])
+
+        result_parts = []
+        for b in range(B):
+            s = int(vox_starts[b])
+            e = int(offsets[b])
+            inv = batch["inverse"][b]               # (N,) local voxel indices
+            result_parts.append(vox_feats[s:e][inv])
+
+        return torch.stack(result_parts)            # (B, N, 72)
+
+    # ------------------------------------------------------------------
+    # Checkpoint loading
+    # ------------------------------------------------------------------
+
+    def load_checkpoint(
+        self, checkpoint_path: str
+    ) -> Tuple[Sequence[str], Sequence[str], Sequence[str]]:
         ckpt = torch.load(str(checkpoint_path), map_location="cpu")
         state = extract_state_dict(ckpt)
         model_state = self.model.state_dict()
@@ -44,6 +128,10 @@ class LitePTBackbone(torch.nn.Module):
                 dropped.append(raw_key)
         load_info = self.model.load_state_dict(filtered, strict=False)
         return list(load_info.missing_keys), list(load_info.unexpected_keys), dropped
+
+    # ------------------------------------------------------------------
+    # Convenience constructor
+    # ------------------------------------------------------------------
 
     @classmethod
     def from_default_layout(
@@ -59,13 +147,56 @@ class LitePTBackbone(torch.nn.Module):
         return cls(str(config), str(checkpoint))
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _import_point_class():
+    """Import Pointcept's Point class — handles different repo layouts."""
+    for module_path in (
+        "pointcept.utils.structure",
+        "pointcept.utils.point",
+        "pointcept.models.utils",
+    ):
+        try:
+            import importlib
+            mod = importlib.import_module(module_path)
+            return mod.Point
+        except (ImportError, AttributeError):
+            continue
+    raise ImportError(
+        "Could not import Point from Pointcept. "
+        "Ensure Pointcept is on PYTHONPATH: "
+        "export PYTHONPATH=/path/to/Pointcept:$PYTHONPATH"
+    )
+
+
+def _disable_flash(obj) -> None:
+    """Recursively set enable_flash=False in a Pointcept config object."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k == "enable_flash":
+                obj[k] = False
+            else:
+                _disable_flash(v)
+    elif hasattr(obj, "__dict__"):
+        for k, v in vars(obj).items():
+            if k == "enable_flash":
+                setattr(obj, k, False)
+            else:
+                _disable_flash(v)
+    elif isinstance(obj, (list, tuple)):
+        for item in obj:
+            _disable_flash(item)
+
+
 def strip_common_prefixes(key: str) -> str:
     changed = True
     while changed:
         changed = False
         for prefix in ("module.", "model."):
             if key.startswith(prefix):
-                key = key[len(prefix) :]
+                key = key[len(prefix):]
                 changed = True
     return key
 

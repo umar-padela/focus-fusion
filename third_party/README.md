@@ -40,4 +40,4 @@ Weights go under `checkpoints/` (gitignored — do not commit).
 | Model | Path | Source |
 |-------|------|--------|
 | DINOv2 ViT-S/14 | downloaded via torch.hub on first use | fbaipublicfiles |
-| LitePT small | `checkpoints/LitePT/nuscenes-semseg-litept-small-v1m1/model/model_best.pth` | Person 1 to provide |
+| LitePT small | `/experiments/checkpoints/litept/model_best.pth` (Modal volume) | [`prs-eth/LitePT`](https://huggingface.co/prs-eth/LitePT) — run `modal run modal/modal_setup.py` |

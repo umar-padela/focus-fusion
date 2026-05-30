@@ -87,6 +87,67 @@ CAMERAS: List[str] = [
 # Label utilities
 # ---------------------------------------------------------------------------
 
+def _voxelize(
+    xyz: np.ndarray,
+    grid_size: float = 0.05,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Grid-sample a point cloud.
+
+    Args:
+        xyz:       (N, 3) float32 point coordinates
+        grid_size: voxel edge length in metres
+    Returns:
+        grid_idx:  (n_vox, 3) int64  — integer grid coords of each unique voxel
+        inverse:   (N,)       int64  — maps each point to its voxel in [0, n_vox)
+        vox_xyz:   (n_vox, 3) float32 — mean coordinate within each voxel
+    """
+    xyz = xyz.astype(np.float32)
+    g = np.floor((xyz - xyz.min(axis=0)) / grid_size).astype(np.int64)
+    struct_dt = np.dtype((np.void, g.itemsize * 3))
+    _, uniq_pos, inverse = np.unique(
+        g.view(struct_dt).ravel(), return_index=True, return_inverse=True
+    )
+    uniq_g = g[uniq_pos]
+    n = len(uniq_pos)
+    vox_xyz = np.zeros((n, 3), np.float32)
+    np.add.at(vox_xyz, inverse, xyz)
+    vox_xyz /= np.bincount(inverse, minlength=n).reshape(-1, 1).astype(np.float32)
+    return uniq_g, inverse, vox_xyz
+
+
+def collate_focusfusion(samples: list) -> dict:
+    """Custom collate for FocusFusion batches.
+
+    Dense keys (points, labels, images, inverse) are stacked.
+    Sparse voxel keys (coord, feat, grid_coord) are concatenated with an
+    offset tensor tracking each batch item's voxel count — Pointcept's
+    standard sparse-batch format.
+    """
+    out: dict = {}
+
+    # Dense stackable tensors
+    for key in ("points", "labels", "images", "images_seq", "inverse"):
+        if key in samples[0]:
+            out[key] = torch.stack([s[key] for s in samples])
+
+    # String fields
+    for key in ("sample_token", "scene_name"):
+        if key in samples[0]:
+            out[key] = [s[key] for s in samples]
+
+    # Sparse voxel tensors — concatenate across batch items
+    if "vox_coord" in samples[0]:
+        out["coord"]      = torch.cat([s["vox_coord"]       for s in samples])
+        out["feat"]       = torch.cat([s["vox_feat"]        for s in samples])
+        out["grid_coord"] = torch.cat([s["vox_grid_coord"]  for s in samples])
+        counts = [len(s["vox_coord"]) for s in samples]
+        out["offset"] = torch.tensor(
+            [sum(counts[: i + 1]) for i in range(len(counts))], dtype=torch.long
+        )
+
+    return out
+
+
 def build_learning_map(nusc, ignore_index: int = IGNORE_INDEX) -> np.ndarray:
     """Build a lookup table: raw_label_id → internal 0-based class id (or ignore_index)."""
     if hasattr(nusc, "lidarseg_idx2name_mapping"):
@@ -251,35 +312,50 @@ class NuScenesLidarSegDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         item = self.samples[idx]
-        points, labels = self._load_lidar(item)
+        points, labels, vox_keys = self._load_lidar(item)
 
-        if self.T == 1:
-            return {
-                "points": points,
-                "images": self._load_images(item.sample_token),
-                "labels": labels,
-                "sample_token": item.sample_token,
-                "scene_name": item.scene_name,
-            }
-        return {
-            "points": points,
-            "images_seq": self._load_images_seq(item.sample_token),
-            "labels": labels,
+        base = {
+            "points":       points,
+            "labels":       labels,
             "sample_token": item.sample_token,
-            "scene_name": item.scene_name,
+            "scene_name":   item.scene_name,
+            **vox_keys,
         }
+        if self.T == 1:
+            base["images"] = self._load_images(item.sample_token)
+        else:
+            base["images_seq"] = self._load_images_seq(item.sample_token)
+        return base
 
     # ------------------------------------------------------------------
     # LiDAR
     # ------------------------------------------------------------------
 
-    def _load_lidar(self, item: LidarSegSample) -> tuple[Tensor, Tensor]:
-        points = _load_lidar_bin(item.lidar_path)          # (N_raw, 5)
+    def _load_lidar(self, item: LidarSegSample) -> tuple[Tensor, Tensor, dict]:
+        points = _load_lidar_bin(item.lidar_path)          # (N_raw, 5): x,y,z,intensity,ring
         xyz = points[:, :3].astype(np.float32)             # (N_raw, 3)
+        intensity = points[:, 3:4].astype(np.float32)      # (N_raw, 1)
         raw_labels = np.fromfile(item.label_path, dtype=np.uint8)
-        labels = remap_raw_labels(raw_labels, self.learning_map)  # 0–15 or -1
-        xyz, labels = subsample_points(xyz, labels, self.num_points)
-        return torch.from_numpy(xyz), torch.from_numpy(labels)
+        labels = remap_raw_labels(raw_labels, self.learning_map)
+        xyzi = np.concatenate([xyz, intensity], axis=1)    # (N_raw, 4)
+        xyzi, labels = subsample_points(xyzi, labels, self.num_points)
+        xyz = xyzi[:, :3]
+
+        # Voxelise for LitePT (Pointcept sparse format)
+        grid_idx, inverse, vox_xyz = _voxelize(xyz)
+        n_vox = len(vox_xyz)
+        # Mean intensity per voxel
+        vox_intensity = np.zeros((n_vox, 1), np.float32)
+        np.add.at(vox_intensity[:, 0], inverse, xyzi[:, 3])
+        vox_intensity /= np.bincount(inverse, minlength=n_vox).reshape(-1, 1).astype(np.float32)
+        vox_feat = np.concatenate([vox_xyz, vox_intensity], axis=1)
+        vox_keys = {
+            "vox_coord":      torch.from_numpy(vox_xyz),
+            "vox_feat":       torch.from_numpy(vox_feat),
+            "vox_grid_coord": torch.from_numpy(grid_idx),
+            "inverse":        torch.from_numpy(inverse),   # (N,) local voxel indices
+        }
+        return torch.from_numpy(xyz), torch.from_numpy(labels), vox_keys
 
     # ------------------------------------------------------------------
     # Images (Person 2's DINOv2 pipeline)

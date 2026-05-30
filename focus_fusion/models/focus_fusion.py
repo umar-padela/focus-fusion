@@ -183,8 +183,12 @@ class FocusFusion(nn.Module):
         """
 
     def trainable_parameters(self) -> list:
-        """Parameters that should be optimised (fusion + seg head, not frozen backbones)."""
-        return list(self.cross_attn.parameters()) + list(self.seg_head.parameters())
+        """Parameters that should be optimised (fusion + seg head + memory bank PEs)."""
+        return (
+            list(self.memory_bank.parameters())   # camera_embed if use_camera_pe=True
+            + list(self.cross_attn.parameters())
+            + list(self.seg_head.parameters())
+        )
 
     def num_trainable_params(self) -> int:
         return sum(p.numel() for p in self.trainable_parameters())

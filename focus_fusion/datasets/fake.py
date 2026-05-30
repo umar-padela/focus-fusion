@@ -9,9 +9,12 @@ NuScenesLidarSegDataset would produce. Use it in:
 
 from __future__ import annotations
 
+import numpy as np
 import torch
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
+
+from focus_fusion.datasets.nuscenes import _voxelize, collate_focusfusion
 
 
 class FakeLidarSegDataset(Dataset):
@@ -46,24 +49,30 @@ class FakeLidarSegDataset(Dataset):
         return self.length
 
     def __getitem__(self, idx: int) -> dict:
-        points = torch.randn(self.num_points, 3)
+        xyz = torch.randn(self.num_points, 3)
         labels = torch.randint(0, self.num_classes, (self.num_points,))
 
-        if self.T == 1:
-            return {
-                "points": points,
-                "images": torch.rand(self.num_cameras, 3, self.img_size, self.img_size),
-                "labels": labels,
-                "sample_token": f"fake_{idx:05d}",
-            }
-        return {
-            "points": points,
-            "images_seq": torch.rand(
-                self.T, self.num_cameras, 3, self.img_size, self.img_size
-            ),
-            "labels": labels,
-            "sample_token": f"fake_{idx:05d}",
+        # Voxelise to match NuScenesLidarSegDataset's batch contract
+        grid_idx, inverse, vox_xyz = _voxelize(xyz.numpy().astype(np.float32))
+        n_vox = len(vox_xyz)
+        vox_feat = np.concatenate(
+            [vox_xyz, np.zeros((n_vox, 1), np.float32)], axis=1
+        )
+        vox_keys = {
+            "vox_coord":      torch.from_numpy(vox_xyz),
+            "vox_feat":       torch.from_numpy(vox_feat),
+            "vox_grid_coord": torch.from_numpy(grid_idx),
+            "inverse":        torch.from_numpy(inverse),
         }
+
+        base = {"points": xyz, "labels": labels, "sample_token": f"fake_{idx:05d}", **vox_keys}
+        if self.T == 1:
+            base["images"] = torch.rand(self.num_cameras, 3, self.img_size, self.img_size)
+        else:
+            base["images_seq"] = torch.rand(
+                self.T, self.num_cameras, 3, self.img_size, self.img_size
+            )
+        return base
 
 
 def build_fake_dataloader(
@@ -89,4 +98,5 @@ def build_fake_dataloader(
         batch_size=batch_size,
         shuffle=(split == "mini_train"),
         num_workers=0,
+        collate_fn=collate_focusfusion,
     )

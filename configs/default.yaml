@@ -12,8 +12,10 @@ data:
 
 model:
   # --- LiDAR backbone ---
-  lidar_backbone: litept        # 'litept' once Person 1's wrapper lands; stub=zeros for now
-  d_l: 512                      # LitePT output dim (confirm with Person 1)
+  lidar_backbone: litept        # frozen; Q = zeros stub until Person 1 exposes backbone features
+  d_l: 72                       # backbone_out_channels from semseg-litept-v1m1-0-small.py
+  litept:
+    config: /root/Pointcept/configs/nuscenes/semseg-litept-v1m1-0-small.py  # Pointcept repo path in Modal container
 
   # --- Vision backbone (frozen DINOv2 ViT-S/14) ---
   d_v: 384                      # patch embedding dim
@@ -34,25 +36,31 @@ model:
   T: 1                          # 1 = E1 (single frame); 6 = E2 (3s at 2Hz)
 
   # --- Positional embeddings ---
-  use_temporal_pe: false
-  use_camera_pe: false
+  use_temporal_pe: true         # sinusoidal PE over T frame positions; useful for E2
+  use_camera_pe: true           # learned embedding per camera (6 cameras); useful for E1+E2
 
   # --- Eval ---
   eval_mode: false              # true = export attn_weights for visualisation
 
 train:
-  epochs: 50
-  batch_size: 2
+  epochs: 10
+  batch_size: 12
   lr: 1.0e-4
+  lr_schedule: constant
   lr_min: 1.0e-6
-  weight_decay: 1.0e-4
+  weight_decay: 5.0e-3
   num_workers: 4
-  val_every_epochs: 5
+  val_every_epochs: 1
 
 loss:
   num_classes: 16
   ignore_index: -1              # void / padded points
-  lovasz_weight: 0.0            # 0.0 = CE only; enable Lovász once baseline is stable
+  lovasz_weight: 0.0            # disabled until CE baseline is stable; re-enable at 0.1
 
 checkpoints:
-  litept: checkpoints/LitePT/nuscenes-semseg-litept-small-v1m1/model/model_best.pth
+  litept: /experiments/checkpoints/litept/model_best.pth   # Modal volume path
+
+wandb:
+  project: focus-fusion          # isolated W&B project — won't mix with other projects
+  entity: null                   # your W&B username or team; null = W&B default
+  run_name: null                 # null = use experiment tag (e1, e2)

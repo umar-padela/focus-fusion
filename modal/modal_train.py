@@ -4,6 +4,7 @@ Local entrypoint — train FocusFusion on Modal.
   modal run modal/modal_train.py --experiment e1                  # live logs; job dies if terminal closes
   modal run --detach modal/modal_train.py --experiment e1         # live logs; job survives terminal close
   modal run --detach modal/modal_train.py --experiment e2         # T=6 temporal run (Person 2)
+  modal run --detach modal/modal_train.py --experiment e1 --epochs 10
 
 The ``--detach`` flag MUST come before the script path to be a Modal CLI flag.
 Placed after the script it becomes a function argument and has no effect.
@@ -31,6 +32,7 @@ from modal_config import app, spawn_modal_function, train
 def main(
     experiment: str = "e1",
     config: str = "configs/default.yaml",
+    epochs: int = 0,
     extra_args: str = "",
 ) -> None:
     """
@@ -42,15 +44,20 @@ def main(
         Which experiment to run: ``e1`` (T=1, single frame) or ``e2`` (T=6, temporal).
     config
         Path to the YAML config file (relative to repo root).
+    epochs
+        Override train.epochs from config (0 = use config default).
     extra_args
-        Space-separated extra CLI flags forwarded verbatim to the trainer, e.g.
-        ``"--batch-size 2 --epochs 50 --lr 1e-4"``.
+        Space-separated extra CLI flags forwarded verbatim to the trainer.
     """
-    extra = [part for part in extra_args.split() if part.strip()] if extra_args else None
+    extra: list[str] = [part for part in extra_args.split() if part.strip()] if extra_args else []
+    if epochs > 0:
+        extra = ["--epochs", str(epochs)] + extra
 
     invoke = f"modal run --detach modal/modal_train.py --experiment {experiment}"
     if config != "configs/default.yaml":
         invoke += f" --config {config}"
+    if epochs > 0:
+        invoke += f" --epochs {epochs}"
     if extra_args.strip():
         invoke += f' --extra-args "{extra_args.strip()}"'
     print(f"Invoke command: {invoke}")
@@ -61,5 +68,5 @@ def main(
         wait=True,
         experiment=experiment,
         config=config,
-        extra_args=extra,
+        extra_args=extra or None,
     )

@@ -18,11 +18,18 @@ from typing import Dict, Optional
 import torch
 import torch.nn as nn
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, LambdaLR
 from torch.utils.data import DataLoader
 
 from focus_fusion.train.losses import SegmentationLoss
 from focus_fusion.models.focus_fusion import FocusFusion
+
+try:
+    import wandb as _wandb
+    _WANDB_AVAILABLE = True
+except ImportError:
+    _wandb = None  # type: ignore
+    _WANDB_AVAILABLE = False
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +131,8 @@ class Trainer:
         out_dir: str = "experiments/logs",
         device: str = "cuda",
         resume: Optional[str] = None,
+        experiment: str = "e1",
+        use_wandb: bool = True,
     ) -> None:
         self.model = model
         self.train_loader = train_loader
@@ -145,13 +154,17 @@ class Trainer:
         )
 
         self.num_epochs = int(tc.get("epochs", 50))
-        self.val_every = int(tc.get("val_every_epochs", 5))
+        self.val_every = int(tc.get("val_every_epochs", 1))
 
-        self.scheduler = CosineAnnealingLR(
-            self.optimizer,
-            T_max=self.num_epochs,
-            eta_min=float(tc.get("lr_min", 1e-6)),
-        )
+        lr_schedule = tc.get("lr_schedule", "constant")
+        if lr_schedule == "cosine":
+            self.scheduler = CosineAnnealingLR(
+                self.optimizer,
+                T_max=self.num_epochs,
+                eta_min=float(tc.get("lr_min", 1e-6)),
+            )
+        else:
+            self.scheduler = LambdaLR(self.optimizer, lr_lambda=lambda epoch: 1.0)
 
         lc = config.get("loss", {})
         self.criterion = SegmentationLoss(
@@ -169,6 +182,26 @@ class Trainer:
 
         self.csv_logger = CSVLogger(self.out_dir / "train_log.csv")
 
+        self.wandb = None
+        if use_wandb and _WANDB_AVAILABLE:
+            wc = config.get("wandb", {})
+            run_name = wc.get("run_name") or experiment
+            try:
+                self.wandb = _wandb.init(
+                    project=wc.get("project", "focus-fusion"),
+                    entity=wc.get("entity") or None,
+                    name=run_name,
+                    config=config,
+                    resume="allow",
+                    dir=str(self.out_dir),
+                )
+                print(f"[trainer] W&B run: {self.wandb.url}")
+            except Exception as e:
+                print(f"[trainer] W&B init failed ({e}) — continuing without W&B logging")
+                self.wandb = None
+        elif use_wandb and not _WANDB_AVAILABLE:
+            print("[trainer] wandb not installed — skipping W&B logging")
+
     # ------------------------------------------------------------------
 
     def train(self) -> None:
@@ -179,6 +212,11 @@ class Trainer:
             train_metrics = self._train_epoch(epoch)
             elapsed = time.time() - t0
 
+            current_lr = self.scheduler.get_last_lr()[0]
+            # Use the last global step of this epoch so epoch-level logs are on the
+            # same axis as per-batch logs (step must be monotonically increasing in wandb).
+            epoch_step = (epoch + 1) * len(self.train_loader)
+
             log_row: Dict = {
                 "epoch": epoch,
                 "split": "train",
@@ -186,9 +224,20 @@ class Trainer:
                 "elapsed_s": f"{elapsed:.1f}",
             }
 
+            wandb_log: Dict = {
+                "train/loss": train_metrics["loss"],
+                "train/lr": current_lr,
+                "epoch": epoch,
+            }
+
             if (epoch + 1) % self.val_every == 0:
                 val_metrics = self._val_epoch(epoch)
                 log_row.update({f"val_{k}": v for k, v in val_metrics.items()})
+                # W&B only accepts scalars — skip arrays (per_class_iou, confusion, etc.)
+                wandb_log.update({
+                    f"val/{k}": v for k, v in val_metrics.items()
+                    if isinstance(v, (int, float))
+                })
 
                 if val_metrics.get("mIoU", 0) > self.best_miou:
                     self.best_miou = val_metrics["mIoU"]
@@ -198,6 +247,9 @@ class Trainer:
                         epoch, val_metrics,
                     )
                     print(f"  New best mIoU: {self.best_miou:.4f} (epoch {epoch})")
+                    if self.wandb:
+                        self.wandb.summary["best_mIoU"] = self.best_miou
+                        self.wandb.summary["best_epoch"] = epoch
 
             _save_checkpoint(
                 self.out_dir / "checkpoints" / "latest.pt",
@@ -206,12 +258,17 @@ class Trainer:
             )
 
             self.csv_logger.log(log_row)
+            if self.wandb:
+                self.wandb.log(wandb_log, step=epoch_step)
+
             print(
                 f"Epoch {epoch:3d}/{self.num_epochs-1} | "
-                f"loss={train_metrics['loss']:.4f} | {elapsed:.1f}s"
+                f"loss={train_metrics['loss']:.4f} | lr={current_lr:.2e} | {elapsed:.1f}s"
             )
 
         self.csv_logger.close()
+        if self.wandb:
+            self.wandb.finish()
         print(f"[trainer] Done. Best mIoU = {self.best_miou:.4f}")
 
     # ------------------------------------------------------------------
@@ -226,10 +283,19 @@ class Trainer:
         total_loss = 0.0
         num_batches = 0
         prev_scene = None
+        global_step = epoch * len(self.train_loader)
 
-        for batch in self.train_loader:
+        lc = self.config.get("loss", {})
+        num_classes = int(lc.get("num_classes", 16))
+        ignore_index = int(lc.get("ignore_index", -1))
+        confusion = torch.zeros(num_classes, num_classes, dtype=torch.long)
+
+        from tqdm import tqdm
+        pbar = tqdm(self.train_loader, desc=f"Epoch {epoch+1}/{self.num_epochs}", unit="batch", dynamic_ncols=True)
+
+        for batch in pbar:
             # Scene boundary → reset stateful memory (no-op for preloaded approach)
-            scene_token = batch.get("scene_token")
+            scene_token = batch.get("scene_name")
             if scene_token is not None:
                 current = scene_token[0] if isinstance(scene_token, list) else scene_token
                 if current != prev_scene:
@@ -241,15 +307,38 @@ class Trainer:
             self.optimizer.zero_grad()
             out = self.model(batch)
 
-            # SegmentationLoss expects (output_dict, batch_dict)
             loss, _ = self.criterion(out, batch)
             loss.backward()
 
             nn.utils.clip_grad_norm_(self.model.trainable_parameters(), max_norm=1.0)
             self.optimizer.step()
 
+            # Accumulate confusion matrix from this batch's predictions (free — reuses logits)
+            with torch.no_grad():
+                preds = out["logits"].argmax(dim=-1).reshape(-1).cpu()
+                gt = batch["labels"].reshape(-1).cpu()
+                mask = gt != ignore_index
+                preds, gt = preds[mask], gt[mask]
+                idx = gt * num_classes + preds
+                confusion.reshape(-1).scatter_add_(0, idx, torch.ones_like(idx))
+
             total_loss += loss.item()
             num_batches += 1
+            global_step += 1
+
+            # Running mIoU from cumulative confusion matrix
+            inter = confusion.diag()
+            union = confusion.sum(1) + confusion.sum(0) - inter
+            valid = union > 0
+            running_miou = (inter[valid].float() / union[valid].float()).mean().item()
+
+            pbar.set_postfix(loss=f"{loss.item():.4f}", mIoU=f"{running_miou:.3f}")
+
+            if self.wandb:
+                self.wandb.log({
+                    "train/loss_step": loss.item(),
+                    "train/mIoU_step": running_miou,
+                }, step=global_step)
 
         self.scheduler.step()
         return {"loss": total_loss / max(num_batches, 1)}
@@ -329,6 +418,8 @@ def build_loaders_from_config(config: Dict, experiment: str):
             T=T,
         )
 
+    from focus_fusion.datasets.nuscenes import collate_focusfusion
+
     tc = config.get("train", {})
     train_loader = DataLoader(
         train_ds,
@@ -336,6 +427,7 @@ def build_loaders_from_config(config: Dict, experiment: str):
         shuffle=False,   # must be False — scene ordering matters
         num_workers=int(tc.get("num_workers", 4)),
         pin_memory=True,
+        collate_fn=collate_focusfusion,
     )
     val_loader = DataLoader(
         val_ds,
@@ -343,6 +435,7 @@ def build_loaders_from_config(config: Dict, experiment: str):
         shuffle=False,
         num_workers=int(tc.get("num_workers", 4)),
         pin_memory=True,
+        collate_fn=collate_focusfusion,
     )
     return train_loader, val_loader
 
@@ -362,6 +455,10 @@ def main() -> None:
                         help="Override output dir (default: experiments/<experiment>)")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--resume", default=None, help="Path to checkpoint to resume")
+    parser.add_argument("--epochs", type=int, default=None,
+                        help="Override train.epochs from config")
+    parser.add_argument("--no-wandb", action="store_true",
+                        help="Disable W&B logging (useful for local smoke runs)")
     args = parser.parse_args()
 
     config = _load_config(args.config)
@@ -369,6 +466,8 @@ def main() -> None:
     # CLI overrides
     if args.data_root:
         config.setdefault("data", {})["dataroot"] = args.data_root
+    if args.epochs is not None:
+        config.setdefault("train", {})["epochs"] = args.epochs
     out_dir = args.output_dir or f"experiments/{args.experiment}"
 
     model = build_model_from_config(config)
@@ -382,6 +481,8 @@ def main() -> None:
         out_dir=out_dir,
         device=args.device,
         resume=args.resume,
+        experiment=args.experiment,
+        use_wandb=not args.no_wandb,
     )
     trainer.train()
 

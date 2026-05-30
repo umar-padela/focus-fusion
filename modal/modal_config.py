@@ -37,27 +37,36 @@ import modal
 app = modal.App("focus-fusion")
 
 REPO_ROOT = "/root/focus-fusion"
-EXPERIMENTS_MOUNT = "/experiments"               # focus-fusion-experiments volume root
-DATA_MOUNT = f"{EXPERIMENTS_MOUNT}/data"         # nuScenes mini lives here inside the volume
+POINTCEPT_DIR = "/root/Pointcept"
+EXPERIMENTS_MOUNT = "/experiments"
+DATA_MOUNT = f"{EXPERIMENTS_MOUNT}/data"
 
 # ---------------------------------------------------------------------------
-# Image — mirrors cs224r conda env (torch 2.1.0+cu121) + project deps
+# Image
 # ---------------------------------------------------------------------------
-# Layer order matters: pip installs are cached; add_local_dir is last so
-# code changes don't invalidate the heavy torch/nuscenes layers above it.
+# Uses the CUDA devel base (not debian_slim) so we can build Pointcept's
+# pointops CUDA extension. Layer order matters for caching: heavy installs
+# first, add_local_dir last so code changes don't bust the expensive layers.
 
 image = (
-    modal.Image.debian_slim(python_version="3.11")
+    modal.Image.from_registry(
+        "nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04",
+        add_python="3.10",
+    )
     .apt_install(
         "git",
         "wget",
         "curl",
-        "libglib2.0-0",      # OpenCV runtime
-        "libgl1-mesa-glx",   # OpenCV headless
-        "libgomp1",          # OpenMP (numpy, scikit-learn)
+        "build-essential",
+        "clang",
+        "gcc",
+        "g++",
+        "ninja-build",
+        "libgl1",
+        "libglib2.0-0",
+        "libgomp1",
     )
     .pip_install(
-        # torch 2.1.0 + CUDA 12.1 — matches cs224r env
         "torch==2.1.0",
         "torchvision==0.16.0",
         extra_index_url="https://download.pytorch.org/whl/cu121",
@@ -65,34 +74,60 @@ image = (
     .pip_install(
         "numpy<2.0",
         "tqdm",
-        "einops",           # used by DINOv2 internals
-        "omegaconf",        # used by DINOv2 internals + config loading
+        "einops",
+        "omegaconf",
         "pyyaml",
-        "scikit-learn",     # mIoU computation in eval
+        "scikit-learn",
         "wandb",
-        "nuscenes-devkit",  # nuScenes mini dataset loading
+        "nuscenes-devkit",
         "opencv-python-headless",
         "matplotlib",
         "Pillow",
+        # Pointcept deps
+        "spconv-cu120",
+        "addict",
+        "yapf",
+        "termcolor",
+        "timm",
+        "peft==0.11.1",
+        "transformers==4.41.2",
+        "accelerate==0.31.0",
     )
-    # Pre-download DINOv2 ViT-S/14 weights into the image so containers start
-    # without a network download. Uses fbaipublicfiles hub; same weights as our
-    # local submodule (third_party/dinov2) with source='local'.
+    # torch-geometric family — Pointcept hard deps (exact set from ptv3 baseline)
+    .run_commands(
+        "python -m pip install "
+        "torch-scatter torch-cluster torch-sparse torch-spline-conv torch-geometric "
+        "-f https://data.pyg.org/whl/torch-2.1.0+cu121.html"
+    )
+    # Pre-download DINOv2 ViT-S/14 weights into the image
     .run_commands(
         "python -c \""
         "import torch; "
         "torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14', pretrained=True)"
         "\""
     )
-    # TODO(Person 1): add ptv3 CUDA ops installation once build steps are confirmed.
-    # Expected step (example, verify with Person 1):
-    #   .run_commands(
-    #       f"cd {REPO_ROOT}/third_party/ptv3 && pip install -e . --no-build-isolation"
-    #   )
+    # flash-attn — hard dependency for LitePT's PointROPEAttention (no fallback).
+    # Pre-built cu121+torch2.1 wheels exist only for cp310 (Python 3.10), not cp311.
+    # This exact wheel was verified working in the ptv3 branch (Person 1's baseline).
+    .pip_install(
+        "https://github.com/Dao-AILab/flash-attention/releases/download/v2.1.1/"
+        "flash_attn-2.1.1+cu121torch2.1cxx11abiFALSE-cp310-cp310-linux_x86_64.whl"
+    )
+    # Clone Pointcept and build the pointops CUDA extension
+    .run_commands(
+        f"git clone https://github.com/Pointcept/Pointcept.git {POINTCEPT_DIR}"
+    )
+    .run_commands(
+        f"cd {POINTCEPT_DIR}/libs/pointops && "
+        "TORCH_CUDA_ARCH_LIST='8.0;8.6;8.9' "
+        "CUDA_HOME=/usr/local/cuda "
+        "python setup.py install"
+    )
     .env(
         {
-            # Make focus_fusion and the dinov2 submodule importable without install.
-            "PYTHONPATH": f"{REPO_ROOT}:{REPO_ROOT}/third_party/dinov2",
+            "PYTHONPATH": f"{REPO_ROOT}:{REPO_ROOT}/third_party/dinov2:{POINTCEPT_DIR}",
+            "CUDA_HOME": "/usr/local/cuda",
+            "TORCH_CUDA_ARCH_LIST": "8.0;8.6;8.9",
         }
     )
     .add_local_dir(
@@ -122,7 +157,7 @@ volume = modal.Volume.from_name("focus-fusion-experiments", create_if_missing=Tr
 # ---------------------------------------------------------------------------
 
 GPU_EVAL = os.environ.get("MODAL_GPU_EVAL", "A10G")
-GPU_TRAIN = os.environ.get("MODAL_GPU_TRAIN", "A100-40GB")
+GPU_TRAIN = os.environ.get("MODAL_GPU_TRAIN", "A100-80GB")
 
 # ---------------------------------------------------------------------------
 # W&B secret — create once: modal secret create wandb WANDB_API_KEY=<key>
@@ -236,7 +271,7 @@ def train(
         "--config", config,
         "--experiment", experiment,
         "--data-root", DATA_MOUNT,
-        "--output-dir", EXPERIMENTS_MOUNT,
+        "--output-dir", f"{EXPERIMENTS_MOUNT}/{experiment}",
     ]
     if extra_args:
         cmd.extend(extra_args)
