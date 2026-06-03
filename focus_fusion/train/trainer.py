@@ -18,7 +18,7 @@ from typing import Dict, Optional
 import torch
 import torch.nn as nn
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR, LambdaLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, LambdaLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader
 
 from focus_fusion.train.losses import SegmentationLoss
@@ -157,12 +157,28 @@ class Trainer:
         self.val_every = int(tc.get("val_every_epochs", 1))
 
         lr_schedule = tc.get("lr_schedule", "constant")
+        warmup_epochs = int(tc.get("warmup_epochs", 0))
         if lr_schedule == "cosine":
-            self.scheduler = CosineAnnealingLR(
+            cosine_epochs = max(1, self.num_epochs - warmup_epochs)
+            cosine = CosineAnnealingLR(
                 self.optimizer,
-                T_max=self.num_epochs,
+                T_max=cosine_epochs,
                 eta_min=float(tc.get("lr_min", 1e-6)),
             )
+            if warmup_epochs > 0:
+                warmup = LinearLR(
+                    self.optimizer,
+                    start_factor=1.0 / warmup_epochs,
+                    end_factor=1.0,
+                    total_iters=warmup_epochs,
+                )
+                self.scheduler = SequentialLR(
+                    self.optimizer,
+                    schedulers=[warmup, cosine],
+                    milestones=[warmup_epochs],
+                )
+            else:
+                self.scheduler = cosine
         else:
             self.scheduler = LambdaLR(self.optimizer, lr_lambda=lambda epoch: 1.0)
 
@@ -389,15 +405,33 @@ def build_loaders_from_config(config: Dict, experiment: str):
         from focus_fusion.datasets.nuscenes import NuScenesLidarSegDataset
         dc = config.get("data", {})
         dataroot = dc.get("dataroot", "data")
+        version = dc.get("version", "v1.0-mini")
         num_points = config.get("model", {}).get("N_points", 16384)
         img_size = config.get("model", {}).get("img_size", 448)
+        seed = int(config.get("seed", 231))
+        fraction = float(dc.get("fraction", 1.0))
+        val_fraction = float(dc.get("val_fraction", 1.0))
         train_ds = NuScenesLidarSegDataset(
-            dataroot=dataroot, split="mini_train",
-            num_points=num_points, img_size=img_size, T=T,
+            dataroot=dataroot,
+            version=version,
+            split=dc.get("train_split", "mini_train"),
+            num_points=num_points,
+            img_size=img_size,
+            T=T,
+            fraction=fraction,
+            seed=seed,
+            verbose=True,
         )
         val_ds = NuScenesLidarSegDataset(
-            dataroot=dataroot, split="mini_val",
-            num_points=num_points, img_size=img_size, T=T,
+            dataroot=dataroot,
+            version=version,
+            split=dc.get("val_split", "mini_val"),
+            num_points=num_points,
+            img_size=img_size,
+            T=T,
+            fraction=val_fraction,
+            seed=seed,
+            verbose=True,
         )
     except Exception as e:
         print(f"[trainer] NuScenesLidarSegDataset not available ({e}); using FakeLidarSegDataset")

@@ -34,12 +34,10 @@ class SegmentationLoss(nn.Module):
         self,
         ignore_index: int = -1,
         lovasz_weight: float = 0.0,
-        class_weights: Tensor | None = None,
     ) -> None:
         super().__init__()
         self.ignore_index = ignore_index
         self.lovasz_weight = lovasz_weight
-        self.register_buffer("class_weights", class_weights)
 
     def forward(self, output: dict, batch: dict) -> tuple[Tensor, dict]:
         """
@@ -60,7 +58,6 @@ class SegmentationLoss(nn.Module):
         ce = F.cross_entropy(
             logits_flat,
             labels_flat,
-            weight=self.class_weights,
             ignore_index=self.ignore_index,
         )
 
