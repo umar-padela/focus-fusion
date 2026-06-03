@@ -154,6 +154,7 @@ class LitePTBackbone(torch.nn.Module):
 def _import_point_class():
     """Import Pointcept's Point class — handles different repo layouts."""
     for module_path in (
+        "pointcept.models.utils.structure",  # current Pointcept layout
         "pointcept.utils.structure",
         "pointcept.utils.point",
         "pointcept.models.utils",

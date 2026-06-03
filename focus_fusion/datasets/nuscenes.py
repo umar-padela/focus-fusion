@@ -262,6 +262,8 @@ class NuScenesLidarSegDataset(Dataset):
         ignore_index: int = IGNORE_INDEX,
         verbose: bool = False,
         max_scans: Optional[int] = None,
+        fraction: float = 1.0,
+        seed: int = 231,
     ) -> None:
         from nuscenes.nuscenes import NuScenes
         from nuscenes.utils.splits import create_splits_scenes
@@ -297,6 +299,26 @@ class NuScenesLidarSegDataset(Dataset):
             ))
 
         samples.sort(key=lambda x: (x.scene_name, x.timestamp))
+
+        # Filter to files that are actually present on disk first, so that
+        # fraction applies to uploaded data rather than all of NuScenes.
+        present = [s for s in samples if os.path.exists(s.lidar_path) and os.path.exists(s.label_path)]
+        n_dropped = len(samples) - len(present)
+        if n_dropped:
+            n_present_scenes = len(set(s.scene_name for s in present))
+            print(
+                f"[NuScenesLidarSegDataset] {n_present_scenes} scenes / {len(present)} scans available "
+                f"({n_dropped} skipped — blobs not uploaded)"
+            )
+        samples = present
+
+        if fraction < 1.0:
+            all_scenes = sorted(set(s.scene_name for s in samples))
+            rng = np.random.default_rng(seed)
+            n_scenes = max(1, round(len(all_scenes) * fraction))
+            chosen = set(rng.choice(all_scenes, n_scenes, replace=False).tolist())
+            samples = [s for s in samples if s.scene_name in chosen]
+
         self.samples = samples[:int(max_scans)] if max_scans is not None else samples
 
         self.img_transform = transforms.Compose([
@@ -305,7 +327,8 @@ class NuScenesLidarSegDataset(Dataset):
         ])
 
         if verbose:
-            print(f"[NuScenesLidarSegDataset] {len(self.samples)} scans ({split})")
+            n_scenes = len(set(s.scene_name for s in self.samples))
+            print(f"[NuScenesLidarSegDataset] {len(self.samples)} scans / {n_scenes} scenes ({split}, fraction={fraction:.2f})")
 
     def __len__(self) -> int:
         return len(self.samples)

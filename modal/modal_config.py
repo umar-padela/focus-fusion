@@ -113,9 +113,10 @@ image = (
         "https://github.com/Dao-AILab/flash-attention/releases/download/v2.1.1/"
         "flash_attn-2.1.1+cu121torch2.1cxx11abiFALSE-cp310-cp310-linux_x86_64.whl"
     )
-    # Clone Pointcept and build the pointops CUDA extension
+    # Clone Pointcept and build the pointops CUDA extension (pinned for reproducibility)
     .run_commands(
-        f"git clone https://github.com/Pointcept/Pointcept.git {POINTCEPT_DIR}"
+        f"git clone https://github.com/Pointcept/Pointcept.git {POINTCEPT_DIR} "
+        f"&& git -C {POINTCEPT_DIR} checkout d727225"
     )
     .run_commands(
         f"cd {POINTCEPT_DIR}/libs/pointops && "

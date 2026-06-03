@@ -6,9 +6,11 @@ seed: 231
 
 data:
   dataroot: /experiments/data   # Modal volume path; override locally with --data-root data
-  version: v1.0-mini
-  train_split: mini_train
-  val_split: mini_val
+  version: v1.0-trainval
+  train_split: train
+  val_split: val
+  fraction: 1.0       # fraction of *uploaded* train scenes to use (1.0 = all uploaded blobs; 0.5 = half)
+  val_fraction: 1.0   # fraction of uploaded val scenes to use
 
 model:
   # --- LiDAR backbone ---
@@ -43,11 +45,12 @@ model:
   eval_mode: false              # true = export attn_weights for visualisation
 
 train:
-  epochs: 10
+  epochs: 20
   batch_size: 12
   lr: 1.0e-4
-  lr_schedule: constant
+  lr_schedule: cosine           # was: constant — decays to lr_min to prevent late-epoch oscillation
   lr_min: 1.0e-6
+  warmup_epochs: 3              # linear warmup 0→lr over first 3 epochs, then cosine over remaining 17
   weight_decay: 5.0e-3
   num_workers: 4
   val_every_epochs: 1
@@ -55,7 +58,7 @@ train:
 loss:
   num_classes: 16
   ignore_index: -1              # void / padded points
-  lovasz_weight: 0.0            # disabled until CE baseline is stable; re-enable at 0.1
+  lovasz_weight: 0.0            # disabled; enable once baseline is stable
 
 checkpoints:
   litept: /experiments/checkpoints/litept/model_best.pth   # Modal volume path
