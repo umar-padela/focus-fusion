@@ -91,28 +91,36 @@ def _voxelize(
     xyz: np.ndarray,
     grid_size: float = 0.05,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Grid-sample a point cloud.
+    grid_idx, inverse, unique_indices = voxelize_first_point_indices(xyz, grid_size)
+    xyz = xyz.astype(np.float32, copy=False)
+    return grid_idx, inverse, xyz[unique_indices]
 
-    Args:
-        xyz:       (N, 3) float32 point coordinates
-        grid_size: voxel edge length in metres
-    Returns:
-        grid_idx:  (n_vox, 3) int64  — integer grid coords of each unique voxel
-        inverse:   (N,)       int64  — maps each point to its voxel in [0, n_vox)
-        vox_xyz:   (n_vox, 3) float32 — mean coordinate within each voxel
-    """
-    xyz = xyz.astype(np.float32)
-    g = np.floor((xyz - xyz.min(axis=0)) / grid_size).astype(np.int64)
-    struct_dt = np.dtype((np.void, g.itemsize * 3))
-    _, uniq_pos, inverse = np.unique(
-        g.view(struct_dt).ravel(), return_index=True, return_inverse=True
-    )
-    uniq_g = g[uniq_pos]
-    n = len(uniq_pos)
-    vox_xyz = np.zeros((n, 3), np.float32)
-    np.add.at(vox_xyz, inverse, xyz)
-    vox_xyz /= np.bincount(inverse, minlength=n).reshape(-1, 1).astype(np.float32)
-    return uniq_g, inverse, vox_xyz
+
+def voxelize_first_point_indices(
+    xyz: np.ndarray,
+    grid_size: float = 0.05,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    xyz = xyz.astype(np.float32, copy=False)
+    grid_all = np.floor((xyz - xyz.min(axis=0, keepdims=True)) / grid_size).astype(np.int64)
+    _, unique_indices, inverse = np.unique(grid_all, axis=0, return_index=True, return_inverse=True)
+    unique_indices = unique_indices.astype(np.int64)
+    return grid_all[unique_indices], inverse.astype(np.int64), unique_indices
+
+
+def _fixed_size_indices(
+    n_points: int,
+    num_points: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    if n_points >= num_points:
+        idx = np.random.choice(n_points, num_points, replace=False)
+        return idx.astype(np.int64), np.zeros(num_points, dtype=bool)
+
+    pad = num_points - n_points
+    pad_idx = np.random.choice(n_points, pad, replace=True)
+    idx = np.concatenate([np.arange(n_points), pad_idx]).astype(np.int64)
+    pad_mask = np.zeros(num_points, dtype=bool)
+    pad_mask[n_points:] = True
+    return idx, pad_mask
 
 
 def collate_focusfusion(samples: list) -> dict:
@@ -217,17 +225,10 @@ def subsample_points(
     Padding (rare — nuScenes ~34k pts >> 16384): repeated real points get label=-1
     so SegmentationLoss ignores them.
     """
-    N = points.shape[0]
-    if N >= num_points:
-        idx = np.random.choice(N, num_points, replace=False)
-        return points[idx], labels[idx]
-    pad = num_points - N
-    pad_idx = np.random.choice(N, pad, replace=True)
-    pad_labels = np.full(pad, IGNORE_INDEX, dtype=np.int64)
-    return (
-        np.concatenate([points, points[pad_idx]], axis=0),
-        np.concatenate([labels, pad_labels], axis=0),
-    )
+    idx, pad_mask = _fixed_size_indices(points.shape[0], num_points)
+    sampled_labels = labels[idx].copy()
+    sampled_labels[pad_mask] = IGNORE_INDEX
+    return points[idx], sampled_labels
 
 
 # ---------------------------------------------------------------------------
@@ -356,29 +357,29 @@ class NuScenesLidarSegDataset(Dataset):
 
     def _load_lidar(self, item: LidarSegSample) -> tuple[Tensor, Tensor, dict]:
         points = _load_lidar_bin(item.lidar_path)          # (N_raw, 5): x,y,z,intensity,ring
-        xyz = points[:, :3].astype(np.float32)             # (N_raw, 3)
-        intensity = points[:, 3:4].astype(np.float32)      # (N_raw, 1)
         raw_labels = np.fromfile(item.label_path, dtype=np.uint8)
-        labels = remap_raw_labels(raw_labels, self.learning_map)
-        xyzi = np.concatenate([xyz, intensity], axis=1)    # (N_raw, 4)
-        xyzi, labels = subsample_points(xyzi, labels, self.num_points)
-        xyz = xyzi[:, :3]
 
-        # Voxelise for LitePT (Pointcept sparse format)
-        grid_idx, inverse, vox_xyz = _voxelize(xyz)
-        n_vox = len(vox_xyz)
-        # Mean intensity per voxel
-        vox_intensity = np.zeros((n_vox, 1), np.float32)
-        np.add.at(vox_intensity[:, 0], inverse, xyzi[:, 3])
-        vox_intensity /= np.bincount(inverse, minlength=n_vox).reshape(-1, 1).astype(np.float32)
-        vox_feat = np.concatenate([vox_xyz, vox_intensity], axis=1)
+        xyz_full = points[:, :3].astype(np.float32, copy=False)
+        strength_full = points[:, 3:4].astype(np.float32, copy=False) / 255.0
+        labels = remap_raw_labels(raw_labels, self.learning_map)
+
+        grid_idx, inverse_full, unique_indices = voxelize_first_point_indices(xyz_full)
+        vox_xyz = xyz_full[unique_indices]
+        vox_feat = np.concatenate([vox_xyz, strength_full[unique_indices]], axis=1).astype(np.float32)
+
+        sampled_idx, pad_mask = _fixed_size_indices(xyz_full.shape[0], self.num_points)
+        xyz = xyz_full[sampled_idx]
+        sampled_labels = labels[sampled_idx].copy()
+        sampled_labels[pad_mask] = IGNORE_INDEX
+        inverse = inverse_full[sampled_idx]
+
         vox_keys = {
-            "vox_coord":      torch.from_numpy(vox_xyz),
-            "vox_feat":       torch.from_numpy(vox_feat),
-            "vox_grid_coord": torch.from_numpy(grid_idx),
-            "inverse":        torch.from_numpy(inverse),   # (N,) local voxel indices
+            "vox_coord":      torch.from_numpy(vox_xyz).float(),
+            "vox_feat":       torch.from_numpy(vox_feat).float(),
+            "vox_grid_coord": torch.from_numpy(grid_idx).int(),
+            "inverse":        torch.from_numpy(inverse).long(),
         }
-        return torch.from_numpy(xyz), torch.from_numpy(labels), vox_keys
+        return torch.from_numpy(xyz).float(), torch.from_numpy(sampled_labels).long(), vox_keys
 
     # ------------------------------------------------------------------
     # Images (Person 2's DINOv2 pipeline)
