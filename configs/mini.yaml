@@ -1,0 +1,57 @@
+experiment: mini
+seed: 231
+
+data:
+  dataroot: /experiments/data
+  version: v1.0-mini
+  train_split: mini_train
+  val_split: mini_val
+  fraction: 0.05
+  val_fraction: 0.05
+
+model:
+  lidar_backbone: litept
+  d_l: 72
+  litept:
+    config: /root/Pointcept/configs/nuscenes/semseg-litept-v1m1-0-small.py
+
+  d_v: 384
+  img_size: 448
+  normalize_input: true
+
+  d_f: 256
+  num_heads: 8
+  dropout: 0.0
+  head_hidden_dim: 128
+
+  num_classes: 16
+  N_points: 16384
+
+  T: 1
+  use_temporal_pe: false
+  use_camera_pe: true
+  eval_mode: false
+
+train:
+  epochs: 80
+  batch_size: 4
+  lr: 3.0e-4
+  lr_schedule: constant
+  lr_min: 1.0e-6
+  warmup_epochs: 0
+  weight_decay: 0.0
+  num_workers: 4
+  val_every_epochs: 1
+
+loss:
+  num_classes: 16
+  ignore_index: -1
+  lovasz_weight: 0.0
+
+checkpoints:
+  litept: /experiments/checkpoints/litept/model_best.pth
+
+wandb:
+  project: focus-fusion
+  entity: null
+  run_name: mini
