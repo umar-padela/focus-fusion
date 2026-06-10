@@ -1,9 +1,4 @@
-"""Tiny batch factories used by tests and integration smoke checks."""
-
-from __future__ import annotations
-
 import torch
-
 
 def fake_lidar_batch(num_points: int = 1024, num_classes: int = 16):
     coord = torch.randn(num_points, 3)

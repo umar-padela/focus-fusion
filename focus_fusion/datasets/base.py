@@ -1,7 +1,3 @@
-"""Dataset protocol shared by training and evaluation code."""
-
-from __future__ import annotations
-
 from typing import Protocol
 
 

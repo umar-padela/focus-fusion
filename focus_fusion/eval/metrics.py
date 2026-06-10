@@ -1,12 +1,3 @@
-"""Segmentation metrics for FocusFusion.
-
-Two entry points:
-  evaluate_model(model, loader, ...)  — live inference eval, called by Trainer._val_epoch
-  main() / CLI                        — evaluate saved .bin predictions from LitePT/Pointcept
-"""
-
-from __future__ import annotations
-
 import argparse
 import json
 from dataclasses import dataclass
@@ -18,6 +9,9 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+import yaml
+from focus_fusion.models.focus_fusion import FocusFusion
+from focus_fusion.datasets.nuscenes import collate_focusfusion
 
 from focus_fusion.datasets.nuscenes import (
     CLASS_NAMES,
@@ -26,11 +20,6 @@ from focus_fusion.datasets.nuscenes import (
     collate_single_scan,
     official_to_internal_ids,
 )
-
-
-# ---------------------------------------------------------------------------
-# Core metric accumulator (Person 1's confusion-matrix approach)
-# ---------------------------------------------------------------------------
 
 @dataclass
 class MetricResult:
@@ -130,10 +119,6 @@ class SegmentationMeter:
         }
 
 
-# ---------------------------------------------------------------------------
-# Live inference eval — called by Trainer._val_epoch
-# ---------------------------------------------------------------------------
-
 def evaluate_model(
     model: nn.Module,
     loader: DataLoader,
@@ -142,9 +127,6 @@ def evaluate_model(
     ignore_index: int = IGNORE_INDEX,
 ) -> Dict[str, object]:
     """Run model inference over loader and return metrics dict.
-
-    Returns a dict compatible with Trainer._val_epoch:
-        {"mIoU": float, "mAcc": float, "fwIoU": float, ...}
     """
     device = torch.device(device) if isinstance(device, str) else device
     model.eval()
@@ -168,10 +150,66 @@ def evaluate_model(
 
     return meter.to_dict()
 
+def evaluate_checkpoint(
+    checkpoint_path: str,
+    config_path: str,
+    dataroot: str,
+    split: str,
+    out_path: str,
+) -> None:
+    """Load a FocusFusion checkpoint and run live inference eval."""
 
-# ---------------------------------------------------------------------------
-# CLI — evaluate saved .bin predictions from LitePT/Pointcept
-# ---------------------------------------------------------------------------
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = FocusFusion(config)
+    ckpt = torch.load(checkpoint_path, map_location="cpu")
+    model.load_state_dict(ckpt["model_state"])
+    model.to(device)
+
+    mc = config.get("model", {})
+    dataset = NuScenesLidarSegDataset(
+        dataroot=dataroot,
+        version="v1.0-mini",  
+        split=split,
+        num_points=mc.get("N_points", 16384),
+        img_size=mc.get("img_size", 448),
+        T=mc.get("T", 1),
+        verbose=True,
+    )
+    loader = DataLoader(
+        dataset,
+        batch_size=4,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True,
+        collate_fn=collate_focusfusion,
+    )
+
+    lc = config.get("loss", {})
+    metrics = evaluate_model(
+        model=model,
+        loader=loader,
+        device=device,
+        num_classes=int(lc.get("num_classes", 16)),
+        ignore_index=int(lc.get("ignore_index", -1)),
+    )
+
+    meter = SegmentationMeter(num_classes=int(lc.get("num_classes", 16)))
+    result = MetricResult(
+        miou=metrics["mIoU"], macc=metrics["mAcc"],
+        fw_iou=metrics["fwIoU"], all_acc=metrics["allAcc"],
+        per_class_iou=np.array(metrics["per_class_iou"]),
+        per_class_acc=np.array(metrics["per_class_acc"]),
+        support=np.array(metrics["support"]),
+        confusion=np.array(metrics["confusion"]),
+    )
+    print(meter.format_summary(result))
+
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(out_path).write_text(json.dumps(metrics, indent=2))
+    print(f"Metrics saved to {out_path}")
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate saved lidarseg predictions")
@@ -186,10 +224,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if not args.pred_dir:
-        raise SystemExit(
-            "--pred-dir is required. For LitePT E0, generate predictions with "
-            "the Modal/Pointcept eval first, then pass the output folder here."
-        )
+        raise SystemExit("--pred-dir is missing.")
 
     out_path = args.out or f"experiments/logs/{args.experiment}/metrics.json"
     dataset = NuScenesLidarSegDataset(args.dataroot, version=args.version, split=args.split)

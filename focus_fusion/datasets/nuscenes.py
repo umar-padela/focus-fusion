@@ -1,26 +1,3 @@
-"""nuScenes mini lidarseg dataset for FocusFusion.
-
-Merges Person 1's 16-class label remapping with Person 2's camera loading.
-
-Batch dict contract (used by FocusFusion.forward()):
-
-    E1 (T=1):
-        points       (N, 3)           float32  LiDAR xyz, current frame
-        images       (6, 3, H, W)     float32  [0,1]; DINOv2Backbone normalizes internally
-        labels       (N,)             int64    0–15 challenge classes; -1 = ignore
-        sample_token str
-        scene_name   str              for trainer scene-boundary detection
-
-    E2 (T>1):
-        points       (N, 3)
-        images_seq   (T, 6, 3, H, W)  float32  chronological, oldest → current
-        labels       (N,)
-        sample_token str
-        scene_name   str
-"""
-
-from __future__ import annotations
-
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,11 +9,10 @@ from PIL import Image
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
+from nuscenes.nuscenes import NuScenes
+from nuscenes.utils.splits import create_splits_scenes
 
-# ---------------------------------------------------------------------------
-# Label constants (Person 1's 16 challenge-class mapping)
-# ---------------------------------------------------------------------------
-
+# Some constants
 IGNORE_INDEX: int = -1
 
 CLASS_NAMES: Sequence[str] = (
@@ -58,7 +34,7 @@ CLASS_NAMES: Sequence[str] = (
     "vegetation",
 )
 
-# Raw nuScenes general category name → official challenge id (0 = void/ignore, 1–16 = valid)
+# Raw nuScenes general category name to official challenge id (0 = void/ignore, 1–16 = valid)
 _CHALLENGE_ID: Mapping[str, int] = {
     "noise": 0, "animal": 0,
     "human.pedestrian.personal_mobility": 0, "human.pedestrian.stroller": 0,
@@ -83,9 +59,7 @@ CAMERAS: List[str] = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Label utilities
-# ---------------------------------------------------------------------------
+# utility functions
 
 def _voxelize(
     xyz: np.ndarray,
@@ -128,8 +102,7 @@ def collate_focusfusion(samples: list) -> dict:
 
     Dense keys (points, labels, images, inverse) are stacked.
     Sparse voxel keys (coord, feat, grid_coord) are concatenated with an
-    offset tensor tracking each batch item's voxel count — Pointcept's
-    standard sparse-batch format.
+    offset tensor tracking each batch item's voxel count
     """
     out: dict = {}
 
@@ -143,7 +116,7 @@ def collate_focusfusion(samples: list) -> dict:
         if key in samples[0]:
             out[key] = [s[key] for s in samples]
 
-    # Sparse voxel tensors — concatenate across batch items
+    # Sparse voxel tensors - concatenate across batch items
     if "vox_coord" in samples[0]:
         out["coord"]      = torch.cat([s["vox_coord"]       for s in samples])
         out["feat"]       = torch.cat([s["vox_feat"]        for s in samples])
@@ -193,9 +166,7 @@ def official_to_internal_ids(pred_official: np.ndarray) -> np.ndarray:
     return out
 
 
-# ---------------------------------------------------------------------------
-# Point-cloud helpers
-# ---------------------------------------------------------------------------
+# point cloud helper functions
 
 @dataclass(frozen=True)
 class LidarSegSample:
@@ -222,7 +193,7 @@ def subsample_points(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Randomly subsample or pad to exactly num_points.
 
-    Padding (rare — nuScenes ~34k pts >> 16384): repeated real points get label=-1
+    Padding (rare - nuScenes ~34k pts >> 16384): repeated real points get label=-1
     so SegmentationLoss ignores them.
     """
     idx, pad_mask = _fixed_size_indices(points.shape[0], num_points)
@@ -231,25 +202,23 @@ def subsample_points(
     return points[idx], sampled_labels
 
 
-# ---------------------------------------------------------------------------
-# Dataset
-# ---------------------------------------------------------------------------
+# Dataset object
 
 class NuScenesLidarSegDataset(Dataset):
     """Per-keyframe LiDAR + camera dataset for nuScenes mini lidarseg.
 
-    LiDAR labels are remapped to the 16 official challenge classes (Person 1's mapping).
-    Camera images are loaded for all 6 cameras (Person 2's DINOv2 K/V pipeline).
+    LiDAR labels are remapped to the 16 official challenge classes
+    Camera images are loaded for all 6 cameras
 
     Args:
-        dataroot:    path containing v1.0-mini/
-        version:     nuScenes version string
-        split:       'mini_train' or 'mini_val'
-        num_points:  fixed LiDAR points per sample (subsampled/padded)
-        img_size:    camera resize target (must be divisible by 14 for DINOv2)
-        T:           temporal window depth — 1 for E1, 6 for E2
+        dataroot: path containing v1.0-mini/
+        version: nuScenes version string
+        split: 'mini_train' or 'mini_val'
+        num_points: fixed LiDAR points per sample
+        img_size: camera resize target
+        T: temporal window depth
         ignore_index: label value for void / padded points
-        verbose:     print dataset size on load
+        verbose: print dataset size on load
     """
 
     def __init__(
@@ -263,11 +232,10 @@ class NuScenesLidarSegDataset(Dataset):
         ignore_index: int = IGNORE_INDEX,
         verbose: bool = False,
         max_scans: Optional[int] = None,
+        max_scenes: Optional[int] = None,
         fraction: float = 1.0,
         seed: int = 231,
     ) -> None:
-        from nuscenes.nuscenes import NuScenes
-        from nuscenes.utils.splits import create_splits_scenes
 
         self.dataroot = os.path.abspath(dataroot)
         self.num_points = num_points
@@ -301,8 +269,6 @@ class NuScenesLidarSegDataset(Dataset):
 
         samples.sort(key=lambda x: (x.scene_name, x.timestamp))
 
-        # Filter to files that are actually present on disk first, so that
-        # fraction applies to uploaded data rather than all of NuScenes.
         present = [s for s in samples if os.path.exists(s.lidar_path) and os.path.exists(s.label_path)]
         n_dropped = len(samples) - len(present)
         if n_dropped:
@@ -319,12 +285,19 @@ class NuScenesLidarSegDataset(Dataset):
             n_scenes = max(1, round(len(all_scenes) * fraction))
             chosen = set(rng.choice(all_scenes, n_scenes, replace=False).tolist())
             samples = [s for s in samples if s.scene_name in chosen]
+        
+        if max_scenes is not None:
+            all_scenes = sorted(set(s.scene_name for s in samples))
+            rng = np.random.default_rng(seed)
+            n_scenes = min(max_scenes, len(all_scenes))
+            chosen = set(rng.choice(all_scenes, n_scenes, replace=False).tolist())
+            samples = [s for s in samples if s.scene_name in chosen]
 
         self.samples = samples[:int(max_scans)] if max_scans is not None else samples
 
         self.img_transform = transforms.Compose([
             transforms.Resize((img_size, img_size)),
-            transforms.ToTensor(),  # HWC uint8 → CHW float32 [0, 1]
+            transforms.ToTensor(),
         ])
 
         if verbose:
@@ -339,10 +312,10 @@ class NuScenesLidarSegDataset(Dataset):
         points, labels, vox_keys = self._load_lidar(item)
 
         base = {
-            "points":       points,
-            "labels":       labels,
+            "points": points,
+            "labels": labels,
             "sample_token": item.sample_token,
-            "scene_name":   item.scene_name,
+            "scene_name": item.scene_name,
             **vox_keys,
         }
         if self.T == 1:
@@ -356,7 +329,7 @@ class NuScenesLidarSegDataset(Dataset):
     # ------------------------------------------------------------------
 
     def _load_lidar(self, item: LidarSegSample) -> tuple[Tensor, Tensor, dict]:
-        points = _load_lidar_bin(item.lidar_path)          # (N_raw, 5): x,y,z,intensity,ring
+        points = _load_lidar_bin(item.lidar_path)
         raw_labels = np.fromfile(item.label_path, dtype=np.uint8)
 
         xyz_full = points[:, :3].astype(np.float32, copy=False)
@@ -374,19 +347,16 @@ class NuScenesLidarSegDataset(Dataset):
         inverse = inverse_full[sampled_idx]
 
         vox_keys = {
-            "vox_coord":      torch.from_numpy(vox_xyz).float(),
-            "vox_feat":       torch.from_numpy(vox_feat).float(),
+            "vox_coord": torch.from_numpy(vox_xyz).float(),
+            "vox_feat": torch.from_numpy(vox_feat).float(),
             "vox_grid_coord": torch.from_numpy(grid_idx).int(),
-            "inverse":        torch.from_numpy(inverse).long(),
+            "inverse": torch.from_numpy(inverse).long(),
         }
         return torch.from_numpy(xyz).float(), torch.from_numpy(sampled_labels).long(), vox_keys
-
-    # ------------------------------------------------------------------
-    # Images (Person 2's DINOv2 pipeline)
-    # ------------------------------------------------------------------
-
+    
+    # DINOv2 pipeline
     def _load_images(self, sample_token: str) -> Tensor:
-        """Load all 6 cameras for one keyframe → (6, 3, H, W)."""
+        """Load all 6 cameras for one keyframe -> (6, 3, H, W)."""
         sample = self.nusc.get("sample", sample_token)
         imgs = []
         for cam in CAMERAS:
@@ -396,31 +366,22 @@ class NuScenesLidarSegDataset(Dataset):
         return torch.stack(imgs)
 
     def _load_images_seq(self, sample_token: str) -> Tensor:
-        """Load T-frame camera sequence → (T, 6, 3, H, W), chronological."""
+        """Load T-frame camera sequence -> (T, 6, 3, H, W), chronological."""
         tokens: list[str] = []
         token = sample_token
         for _ in range(self.T):
             tokens.append(token)
             prev = self.nusc.get("sample", token)["prev"]
-            token = prev if prev else token  # hold at scene start
+            token = prev if prev else token
         tokens.reverse()
         return torch.stack([self._load_images(t) for t in tokens])
 
 
-# ---------------------------------------------------------------------------
-# Collate (Person 1's single-scan eval helper)
-# ---------------------------------------------------------------------------
-
 def collate_single_scan(batch: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
-    """collate_fn for DataLoader(batch_size=1) — returns the single dict unwrapped."""
+    """collate_fn for DataLoader(batch_size=1) - returns the single dict unwrapped."""
     if len(batch) != 1:
         raise ValueError("collate_single_scan expects batch_size=1.")
     return batch[0]
-
-
-# ---------------------------------------------------------------------------
-# DataLoader factory
-# ---------------------------------------------------------------------------
 
 def build_dataloader(
     dataroot: str,

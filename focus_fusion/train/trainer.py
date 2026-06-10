@@ -404,6 +404,7 @@ def build_loaders_from_config(config: Dict, experiment: str):
     try:
         from focus_fusion.datasets.nuscenes import NuScenesLidarSegDataset
         dc = config.get("data", {})
+        max_scenes = dc.get("max_scenes", None)
         dataroot = dc.get("dataroot", "data")
         version = dc.get("version", "v1.0-mini")
         num_points = config.get("model", {}).get("N_points", 16384)
@@ -421,6 +422,7 @@ def build_loaders_from_config(config: Dict, experiment: str):
             fraction=fraction,
             seed=seed,
             verbose=True,
+            max_scenes=max_scenes
         )
         val_ds = NuScenesLidarSegDataset(
             dataroot=dataroot,
