@@ -1,11 +1,3 @@
-"""FocusFusion training loop.
-
-CLI:
-    python -m focus_fusion.train.trainer --config configs/default.yaml --experiment e1
-    python -m focus_fusion.train.trainer --config configs/default.yaml --experiment e2
-
-Called remotely via modal/modal_train.py.
-"""
 from __future__ import annotations
 
 import argparse
@@ -78,10 +70,6 @@ def _load_checkpoint(path: str, model: nn.Module, optimizer, scheduler) -> int:
     return ckpt["epoch"]
 
 
-# ---------------------------------------------------------------------------
-# CSVLogger
-# ---------------------------------------------------------------------------
-
 class CSVLogger:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -105,21 +93,17 @@ class CSVLogger:
             self._file.close()
 
 
-# ---------------------------------------------------------------------------
-# Trainer
-# ---------------------------------------------------------------------------
-
 class Trainer:
     """Trains FocusFusion fusion + head; backbones stay frozen.
 
     Args:
         model: FocusFusion instance.
-        train_loader: DataLoader — scene-sorted (scene_token used for memory resets).
+        train_loader: DataLoader  
         val_loader: DataLoader for mini_val.
         config: Parsed YAML config dict.
-        out_dir: Output root (checkpoints + logs written here).
+        out_dir: Output root (checkpoints + logs)
         device: torch device string.
-        resume: Path to checkpoint to resume from.
+        resume: Path to checkpoint to resume from
     """
 
     def __init__(
@@ -230,7 +214,7 @@ class Trainer:
 
             current_lr = self.scheduler.get_last_lr()[0]
             # Use the last global step of this epoch so epoch-level logs are on the
-            # same axis as per-batch logs (step must be monotonically increasing in wandb).
+            # same axis as per-batch logs 
             epoch_step = (epoch + 1) * len(self.train_loader)
 
             log_row: Dict = {
@@ -249,7 +233,6 @@ class Trainer:
             if (epoch + 1) % self.val_every == 0:
                 val_metrics = self._val_epoch(epoch)
                 log_row.update({f"val_{k}": v for k, v in val_metrics.items()})
-                # W&B only accepts scalars — skip arrays (per_class_iou, confusion, etc.)
                 wandb_log.update({
                     f"val/{k}": v for k, v in val_metrics.items()
                     if isinstance(v, (int, float))
@@ -291,7 +274,7 @@ class Trainer:
 
     def _train_epoch(self, epoch: int) -> Dict:
         self.model.train()
-        # Keep frozen backbones in eval mode (affects BN / dropout)
+        # Keep frozen backbones in eval mode
         self.model.dinov2.eval()
         if self.model.litept is not None:
             self.model.litept.eval()
@@ -310,7 +293,6 @@ class Trainer:
         pbar = tqdm(self.train_loader, desc=f"Epoch {epoch+1}/{self.num_epochs}", unit="batch", dynamic_ncols=True)
 
         for batch in pbar:
-            # Scene boundary → reset stateful memory (no-op for preloaded approach)
             scene_token = batch.get("scene_name")
             if scene_token is not None:
                 current = scene_token[0] if isinstance(scene_token, list) else scene_token
@@ -329,7 +311,7 @@ class Trainer:
             nn.utils.clip_grad_norm_(self.model.trainable_parameters(), max_norm=1.0)
             self.optimizer.step()
 
-            # Accumulate confusion matrix from this batch's predictions (free — reuses logits)
+            # Accumulate confusion matrix from this batch's predictions
             with torch.no_grad():
                 preds = out["logits"].argmax(dim=-1).reshape(-1).cpu()
                 gt = batch["labels"].reshape(-1).cpu()
@@ -388,9 +370,6 @@ class Trainer:
         }
 
 
-# ---------------------------------------------------------------------------
-# Config-driven model + dataloader builders
-# ---------------------------------------------------------------------------
 
 def build_model_from_config(config: Dict) -> nn.Module:
     """Construct FocusFusion from a YAML config dict."""
@@ -476,9 +455,6 @@ def build_loaders_from_config(config: Dict, experiment: str):
     return train_loader, val_loader
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train FocusFusion")

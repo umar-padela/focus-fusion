@@ -1,21 +1,8 @@
-"""FocusFusion — end-to-end model.
-
-Data flow:
-  batch["points"]      → LitePT (frozen) → Q (B, N, D_l)
-  batch["images"]      → dinov2 (frozen) → patches (B, 1, 6, P, D_v)   [E1, T=1]
-  batch["images_seq"]  → dinov2 (frozen) → patches (B, T, 6, P, D_v)   [E2, T=6]
-  patches → MemoryBank → K/V (B, T*6*P, D_v)
-  Q, K/V → CrossAttentionFusion → fused (B, N, D_f)
-  fused → SegmentationHead → logits (B, N, C)
-"""
 from __future__ import annotations
-
 from typing import TYPE_CHECKING
-
 import torch
 import torch.nn as nn
 from torch import Tensor
-
 from focus_fusion.models.fusion.cross_attention import CrossAttentionFusion
 from focus_fusion.models.temporal.memory_bank import MemoryBank
 from focus_fusion.models.segmentation_head import SegmentationHead
@@ -27,7 +14,7 @@ if TYPE_CHECKING:
 class FocusFusion(nn.Module):
     """Full FocusFusion model.
 
-    Constructor accepts a plain dict or any object with attribute access (e.g. OmegaConf).
+    Constructor accepts a plain dict or any object with attribute access.
     """
 
     def __init__(self, cfg: dict) -> None:
@@ -49,18 +36,14 @@ class FocusFusion(nn.Module):
         self.num_classes = _get(m, "num_classes", 16)
         self.eval_mode = _get(m, "eval_mode", False)
 
-        # Vision backbone (lazy import to avoid hard dependency when submodule absent)
+        # Vision backbone 
         from focus_fusion.models.backbones.dinov2 import DINOv2Backbone
         self.dinov2 = DINOv2Backbone(
             img_size=self.img_size,
             normalize_input=_get(m, "normalize_input", True),
         )
 
-        # LiDAR backbone — LitePTBackbone (Person 1).
-        # Requires Pointcept on PYTHONPATH and a checkpoint under checkpoints/.
-        # Falls back to zero-stub if not configured (for smoke tests / DINOv2-only runs).
-        # TODO (Person 1): expose intermediate per-point features from LitePT encoder
-        # so FocusFusion.forward() can use them as Q instead of zeros.
+        # LiDAR backbone — LitePTBackbone
         self.litept: nn.Module | None = None
         litept_ckpt = _get(ckpt, "litept", None)
         if litept_ckpt:
@@ -96,10 +79,6 @@ class FocusFusion(nn.Module):
             dropout=_get(m, "dropout", 0.1),
         )
 
-    # ------------------------------------------------------------------
-    # LitePT integration (Person 1)
-    # ------------------------------------------------------------------
-
     def set_litept(self, litept_module: nn.Module) -> None:
         """Attach Person 1's LitePTBackbone after construction."""
         litept_module.requires_grad_(False)
@@ -110,17 +89,14 @@ class FocusFusion(nn.Module):
         self.litept = LitePTBackbone(config_path=config_path, checkpoint_path=checkpoint_path)
         self.litept.requires_grad_(False)
 
-    # ------------------------------------------------------------------
-    # Forward
-    # ------------------------------------------------------------------
 
     def forward(self, batch: dict) -> dict:
         """
         Args:
-            batch: dict with at minimum:
+            batch: dict:
                 "points"     : (B, N, 3)
-                "images"     : (B, 6, 3, H, W)          — E1
-                "images_seq" : (B, T, 6, 3, H, W)        — E2 (optional)
+                "images"     : (B, 6, 3, H, W)    
+                "images_seq" : (B, T, 6, 3, H, W)       
         Returns:
             dict with:
                 "logits"      : (B, N, C)
@@ -129,10 +105,7 @@ class FocusFusion(nn.Module):
         points: Tensor = batch["points"]         # (B, N, 3)
         B, N, _ = points.shape
 
-        # 1. LiDAR features — LitePTBackbone (frozen) or zero-stub
-        # TODO (Person 1): LitePTBackbone currently runs the full Pointcept forward.
-        # We need it to return intermediate per-point encoder features (B, N, D_l)
-        # rather than final seg logits. Until that hook is added, Q = zeros.
+        # LiDAR features from LitePTBackbone
         with torch.no_grad():
             if self.litept is not None:
                 q_feats: Tensor = self.litept(batch)  # placeholder — see TODO above
@@ -144,7 +117,7 @@ class FocusFusion(nn.Module):
             "Update configs/default.yaml to match Person 1's ptv3 wrapper."
         )
 
-        # 2. Vision features (frozen dinov2)
+        # 2. Vision features from dinov2
         use_temporal = "images_seq" in batch and self.T > 1
         with torch.no_grad():
             if use_temporal:
@@ -160,27 +133,17 @@ class FocusFusion(nn.Module):
                 patches_cur = self.dinov2(images)       # (B, 6, P, D_v)
                 patches = patches_cur.unsqueeze(1)      # (B, 1, 6, P, D_v)
 
-        # 3. Memory bank → K/V tokens
+        # Memory bank
         kv_tokens = self.memory_bank(patches)  # (B, T*6*P, D_v)
 
-        # 4. Cross-attention fusion
+        # Cross-attention fusion
         fused, attn_w = self.cross_attn(q_feats, kv_tokens)     # (B, N, D_f)
 
-        # 5. Segmentation head
+        # Segmentation head
         logits = self.seg_head(fused)                            # (B, N, C)
 
         return {"logits": logits, "attn_weights": attn_w}
 
-    # ------------------------------------------------------------------
-    # Trainer helpers
-    # ------------------------------------------------------------------
-
-    def reset_memory(self) -> None:
-        """No-op for preloaded-window training (MemoryBank is stateless).
-
-        Called by the trainer at scene boundaries. In our design the dataloader
-        assembles the T-frame window upfront so there is no state to clear.
-        """
 
     def trainable_parameters(self) -> list:
         """Parameters that should be optimised (fusion + seg head + memory bank PEs)."""
@@ -192,10 +155,6 @@ class FocusFusion(nn.Module):
 
     def num_trainable_params(self) -> int:
         return sum(p.numel() for p in self.trainable_parameters())
-
-    # ------------------------------------------------------------------
-    # Attention export utility (Week 2)
-    # ------------------------------------------------------------------
 
     @staticmethod
     def save_attn_sample(
@@ -216,9 +175,7 @@ class FocusFusion(nn.Module):
         torch.save(payload, save_path)
 
 
-# ---------------------------------------------------------------------------
-# Smoke test — run as: python -m focus_fusion.models.focus_fusion
-# ---------------------------------------------------------------------------
+# smoke test
 if __name__ == "__main__":
     import sys
 

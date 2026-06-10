@@ -23,7 +23,7 @@ class CrossAttentionFusion(nn.Module):
         super().__init__()
         self.return_attn_weights = return_attn_weights
 
-        # Project Q from D_l to D_f before attention (D_l != D_f in general)
+        # Project Q from D_l to D_f before attention 
         self.q_proj = nn.Linear(d_l, d_f)
         self.q_norm = nn.LayerNorm(d_f)
 
@@ -58,10 +58,9 @@ class CrossAttentionFusion(nn.Module):
                 average_attn_weights=False,  # keep per-head: (B, num_heads, N, S)
             )
         else:
-            # need_weights=False → PyTorch uses fused FlashAttention kernel
+            # need_weights=False means PyTorch uses fused FlashAttention kernel
             out, _ = self.attn(Q, kv_tokens, kv_tokens, need_weights=False)
             attn_w = None
 
-        # Residual: preserve LiDAR features in the output so the seg head sees both
-        # LiDAR geometry (Q) and attended visual features (out), not just visual.
+        # Residual: preserve LiDAR features in the output 
         return out + Q, attn_w

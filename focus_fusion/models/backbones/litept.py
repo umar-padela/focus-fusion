@@ -1,12 +1,8 @@
 """LitePT backbone wrapper for FocusFusion.
 
-Wraps Pointcept's DefaultSegmentorV2 to extract per-point encoder features
-(backbone_out_channels=72) rather than segmentation logits.
+Wraps Pointcept's DefaultSegmentorV2 to extract per-point encoder features.
 
-Voxelisation is handled by the dataloader (collate_focusfusion in nuscenes.py),
-so this wrapper just receives a pre-built Pointcept sparse batch and runs the
-backbone. The inverse mapping (also built by the dataloader) is used to expand
-voxel features back to per-point.
+Voxelisation is handled by the dataloader.
 
     """
 
@@ -63,10 +59,6 @@ class LitePTBackbone(torch.nn.Module):
 
         self.requires_grad_(False)
 
-    # ------------------------------------------------------------------
-    # Forward
-    # ------------------------------------------------------------------
-
     def forward(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Extract per-point LitePT backbone features.
 
@@ -87,7 +79,7 @@ class LitePTBackbone(torch.nn.Module):
             "grid_size":  self.grid_size,
         })
 
-        # Run backbone only — skip seg_head to get encoder features, not logits
+        # Run backbone only, skip seg_head to get encoder features
         point = self.model.backbone(point)
         vox_feats = point.feat          # (total_vox, 72)
 
@@ -108,10 +100,6 @@ class LitePTBackbone(torch.nn.Module):
 
         return torch.stack(result_parts)            # (B, N, 72)
 
-    # ------------------------------------------------------------------
-    # Checkpoint loading
-    # ------------------------------------------------------------------
-
     def load_checkpoint(
         self, checkpoint_path: str
     ) -> Tuple[Sequence[str], Sequence[str], Sequence[str]]:
@@ -129,10 +117,6 @@ class LitePTBackbone(torch.nn.Module):
         load_info = self.model.load_state_dict(filtered, strict=False)
         return list(load_info.missing_keys), list(load_info.unexpected_keys), dropped
 
-    # ------------------------------------------------------------------
-    # Convenience constructor
-    # ------------------------------------------------------------------
-
     @classmethod
     def from_default_layout(
         cls,
@@ -146,10 +130,6 @@ class LitePTBackbone(torch.nn.Module):
         )
         return cls(str(config), str(checkpoint))
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _import_point_class():
     """Import Pointcept's Point class — handles different repo layouts."""

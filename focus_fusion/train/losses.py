@@ -1,15 +1,3 @@
-"""Per-point segmentation losses.
-
-Primary: cross-entropy on point labels.
-Optional: Lovász-Softmax (weighted addition), which directly optimises a
-surrogate of the per-class IoU and tends to improve mIoU convergence speed.
-Reference: Berman et al., "The Lovász-Softmax Loss" (CVPR 2018).
-
-Interface expected by the trainer:
-    loss, loss_dict = criterion(output, batch)
-    output: {"logits": Tensor (B, N, C)}
-    batch:  {"labels": Tensor (B, N)}   — integer class indices; -1 = ignore
-"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -22,11 +10,9 @@ class SegmentationLoss(nn.Module):
     Args:
         ignore_index: label value to skip in loss computation.
             Use -1 for padded/invalid points (default).
-            nuScenes lidarseg class 0 ("noise") may also want ignoring —
-            set ignore_index=0 if the dataloader preserves raw class indices.
         lovasz_weight: weight for the Lovász-Softmax term.
             0.0 (default) = CE only. 1.0 = equal mix. Paper used CE + Lovász
-            unweighted sum; start at 0 and enable once baseline is stable.
+            unweighted sum.
         class_weights: optional (C,) float tensor for class-frequency reweighting.
     """
 
@@ -76,10 +62,6 @@ class SegmentationLoss(nn.Module):
         }
         return loss, loss_dict
 
-
-# ---------------------------------------------------------------------------
-# Lovász-Softmax implementation
-# ---------------------------------------------------------------------------
 
 def _lovasz_grad(gt_sorted: Tensor) -> Tensor:
     """Lovász extension gradient for a sorted binary ground-truth vector."""

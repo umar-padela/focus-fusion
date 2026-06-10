@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-# Inject submodule path so `import dinov2` resolves to third_party/dinov2
+# Inject submodule path
 _THIRD_PARTY = pathlib.Path(__file__).parents[4] / "third_party"
 _DINOV2_REPO = _THIRD_PARTY / "dinov2"
 
@@ -16,7 +16,7 @@ _IMAGENET_STD = (0.229, 0.224, 0.225)
 class DINOv2Backbone(nn.Module):
     """Frozen DINOv2 ViT backbone that returns patch embeddings for multi-camera input.
 
-    Default: dinov2_vits14 (ViT-S/14, D_v=384, 22M params).
+    Default: dinov2_vits14 (ViT-S/14, D_v=384).
     Accepts (B, 6, 3, H, W) and returns (B, 6, P, D_v), no CLS token.
     Applies ImageNet normalization internally (normalize_input=True by default).
     """
@@ -30,11 +30,11 @@ class DINOv2Backbone(nn.Module):
     ) -> None:
         """
         Args:
-            model_name: torch.hub model name (dinov2_vits14 / dinov2_vitb14 / etc.)
-            img_size: input resolution — must be divisible by 14; default 448 (P=1024)
+            model_name: torch.hub model name 
+            img_size: input resolution, must be divisible by 14; default 448 (P=1024)
             freeze: freeze all backbone parameters (should always be True)
             normalize_input: apply ImageNet mean/std normalisation inside forward.
-                True by default — assumes raw [0,1] float images from the dataloader.
+                True by default, assumes raw [0,1] float images from the dataloader.
         """
         super().__init__()
         assert img_size % 14 == 0, f"img_size={img_size} must be divisible by 14 (DINOv2 patch stride)"
@@ -50,7 +50,7 @@ class DINOv2Backbone(nn.Module):
                 pretrained=True,
             )
         else:
-            # Fallback: download from hub (requires internet; avoid in training runs)
+            # fallback download
             model = torch.hub.load("facebookresearch/dinov2", model_name)
 
         if freeze:
@@ -73,7 +73,7 @@ class DINOv2Backbone(nn.Module):
         Returns:
             patch_embs: (B, 6, P, D_v)  — D_v=384 for ViT-S, 768 for ViT-B; P = (img_size/14)², no CLS token
         """
-        B, C, _, H, W = images.shape  # C = num_cameras = 6
+        B, C, _, H, W = images.shape  
 
         flat = images.view(B * C, 3, H, W)  # (B*6, 3, H, W)
 

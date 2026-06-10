@@ -12,9 +12,9 @@ class SegmentationHead(nn.Module):
     """Two-layer MLP per-point segmentation head.
 
     Args:
-        d_in: Input feature dim — must match CrossAttentionFusion output (d_f).
-        num_classes: Number of semantic classes (32 for nuScenes lidarseg).
-        hidden_dim: Hidden layer width. None → single linear layer.
+        d_in: Input feature dim, must match CrossAttentionFusion output (d_f).
+        num_classes: Number of semantic classes ]
+        hidden_dim: Hidden layer width. None means single layer
         dropout: Dropout between hidden and output layers.
     """
 
