@@ -1,0 +1,3 @@
+We independently came up with our project plan, created our project proposal, fleshed out the idea, and then explained our idea and used AI to help generate the project_plan.md document. AI never generated its own ideas, it was only used to summarize our own existing ideas into the project_plan.md file. The project_plan.md file has a change log documenting the prompts and tasks that the AI helped out with. 
+
+Before submitting the final paper, we employed AI to help us decide what details to cut out in order to meet the page limit. Our prompt was: "suggest me things I should think about cutting down from this report to help me get under the page limit, do NOT make any changes, I will look over your suggestions and implement."
